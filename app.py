@@ -6,11 +6,17 @@ import streamlit as st
 # ---------- Helpers ----------
 
 def parse_area_m2(dimensions: str):
-    """Convert '841mm x 1189mm' → m²"""
+    """Convert '841mm x 1189mm' → m² (assumes mm × mm)."""
     if pd.isna(dimensions):
         return np.nan
 
-    s = str(dimensions).lower().replace(" ", "").replace("mm", "").replace("×", "x")
+    s = (
+        str(dimensions)
+        .lower()
+        .replace(" ", "")
+        .replace("mm", "")
+        .replace("×", "x")
+    )
     parts = s.split("x")
     if len(parts) != 2:
         return np.nan
@@ -25,13 +31,14 @@ def parse_area_m2(dimensions: str):
 
 
 def extract_stock_name(spec: str):
+    """Take text before first comma as stock name."""
     if pd.isna(spec):
         return ""
     return str(spec).split(",")[0].strip()
 
 
 def detect_sides(spec: str):
-    """Detect single/double sided. Default to Single Sided."""
+    """Detect single/double sided from text. Default to Single Sided."""
     if pd.isna(spec) or str(spec).strip() == "":
         return "Single Sided"
 
@@ -44,7 +51,7 @@ def detect_sides(spec: str):
 # ---------- Streamlit App ----------
 
 st.set_page_config(page_title="BP Tender SQM Calculator", layout="wide")
-st.title("BP Tender – Square Metre Price Calculator")
+st.title("BP Tender – Square Metre Price Calculator (Grouped Stocks)")
 
 uploaded_file = st.file_uploader("Upload the tender Excel file", type=["xlsx", "xls"])
 
@@ -70,86 +77,119 @@ data["Double Sided?"] = data["Sided (auto)"] == "Double Sided"
 data["Quantity"] = data["Total Annual Volume"]
 data["Total Area m²"] = data["Area m² (each)"] * data["Quantity"]
 
+# ---------- Step 1: Double-sided control ----------
+
 st.subheader("Step 1 – Review & adjust double-sided lines")
 
-display_cols = [
-    col for col in [
-        "Lot ID" if "Lot ID" in data.columns else None,
-        "Item Description" if "Item Description" in data.columns else None,
-        "Dimensions",
-        "Print/Stock Specifications",
-        "Quantity",
-        "Area m² (each)",
-        "Total Area m²",
-        "Sided (auto)",
-        "Double Sided?",
-    ] if col is not None
+base_cols = [
+    "Dimensions",
+    "Print/Stock Specifications",
+    "Quantity",
+    "Area m² (each)",
+    "Total Area m²",
+    "Double Sided?",
 ]
 
-edited = st.data_editor(
-    data[display_cols],
+if "Lot ID" in data.columns:
+    base_cols.insert(0, "Lot ID")
+if "Item Description" in data.columns:
+    base_cols.insert(1, "Item Description")
+
+double_sided_view = st.data_editor(
+    data[base_cols],
     use_container_width=True,
     num_rows="dynamic",
+    column_config={
+        "Double Sided?": st.column_config.CheckboxColumn(
+            "Double Sided?",
+            help="Tick to apply double-sided loading on this line.",
+            default=False,
+        )
+    },
+    key="double_sided_editor",
 )
 
-# Update the main frame with edited double-sided flags
-data["Double Sided?"] = edited["Double Sided?"].astype(bool)
+# Update main data with edited Double Sided? values
+data["Double Sided?"] = double_sided_view["Double Sided?"].fillna(False)
+
+st.caption("You can enable/disable double-sided pricing per line using the checkboxes above.")
+
+# ---------- Step 2: Stock grouping ----------
+
+st.subheader("Step 2 – Group similar materials for pricing")
+
+unique_stocks = sorted(
+    s for s in data["Stock Name"].dropna().unique() if str(s).strip()
+)
+
+if "stock_groups_df" not in st.session_state:
+    st.session_state["stock_groups_df"] = pd.DataFrame({
+        "Stock Name": unique_stocks,
+        "Group Name": unique_stocks,  # default: each stock is its own group
+    })
+else:
+    sg = st.session_state["stock_groups_df"]
+    existing = set(sg["Stock Name"])
+    new_rows = [s for s in unique_stocks if s not in existing]
+    if new_rows:
+        sg = pd.concat(
+            [sg, pd.DataFrame({"Stock Name": new_rows, "Group Name": new_rows})],
+            ignore_index=True,
+        )
+    sg = sg[sg["Stock Name"].isin(unique_stocks)].reset_index(drop=True)
+    st.session_state["stock_groups_df"] = sg
 
 st.markdown(
-    "You can tick/untick **Double Sided?** above to enable/disable double-sided pricing for any line."
+    """Type the **Group Name** for each stock below:
+
+- Stocks with the **same Group Name** share one price per m²  
+- Stocks with **different Group Names** have different prices  
+
+Example: put multiple synthetics into **\"Synthetic Group\"**.
+"""
 )
 
-# ---------- Stock grouping & pricing ----------
+stock_groups_df = st.data_editor(
+    st.session_state["stock_groups_df"],
+    use_container_width=True,
+    num_rows="fixed",
+    key="stock_group_editor",
+)
 
-st.sidebar.header("Pricing & Stock Grouping")
+st.session_state["stock_groups_df"] = stock_groups_df
 
-# Unique stocks
-unique_stocks = sorted(x for x in data["Stock Name"].dropna().unique() if str(x).strip())
+stock_to_group = dict(
+    zip(stock_groups_df["Stock Name"], stock_groups_df["Group Name"])
+)
 
-# Initialise grouping in session_state
-if "stock_groups" not in st.session_state:
-    st.session_state["stock_groups"] = {s: s for s in unique_stocks}
-else:
-    # Ensure all current stocks are present
-    for s in unique_stocks:
-        st.session_state["stock_groups"].setdefault(s, s)
+data["Stock Group"] = data["Stock Name"].map(stock_to_group).fillna("Unassigned")
 
-st.sidebar.subheader("Stock → Group mapping")
+# ---------- Step 3: Pricing per group & calculation ----------
 
-stock_groups = {}
-for stock in unique_stocks:
-    default_group = st.session_state["stock_groups"].get(stock, stock)
-    group_name = st.sidebar.text_input(
-        f"Group for '{stock}'",
-        value=default_group,
-        key=f"group_{stock}",
-    )
-    stock_groups[stock] = group_name
-    st.session_state["stock_groups"][stock] = group_name
+st.sidebar.header("Pricing & double-sided loading")
 
-data["Stock Group"] = data["Stock Name"].map(stock_groups).fillna("Unassigned")
-
-# Groups = all distinct group names
-group_names = sorted(set(stock_groups.values()))
-
-st.sidebar.subheader("Price per m² (by group)")
+group_names = sorted(
+    g for g in data["Stock Group"].dropna().unique() if str(g).strip()
+)
 
 group_prices = {}
+st.sidebar.subheader("Price per m² by group")
+
 for group in group_names:
     group_prices[group] = st.sidebar.number_input(
         f"{group}",
         min_value=0.0,
         value=0.0,
-        step=0.1,
+        step=0.10,
         key=f"price_group_{group}",
     )
 
-# Double-sided loading
 double_loading_pct = st.sidebar.number_input(
     "Double-sided loading (%)",
     min_value=0.0,
     value=25.0,
     step=1.0,
+    help="Extra percentage applied to double-sided lines.",
 )
 
 data["Price per m²"] = data["Stock Group"].map(group_prices).fillna(0.0)
@@ -161,38 +201,40 @@ data["Line Value (ex GST)"] = (
     data["Total Area m²"] * data["Price per m²"] * data["Sided Multiplier"]
 )
 
-st.subheader("Step 2 – Calculated pricing")
+st.subheader("Step 3 – Calculated pricing")
 
 pricing_cols = [
-    col for col in [
-        "Lot ID" if "Lot ID" in data.columns else None,
-        "Item Description" if "Item Description" in data.columns else None,
-        "Stock Name",
-        "Stock Group",
-        "Dimensions",
-        "Quantity",
-        "Total Area m²",
-        "Double Sided?",
-        "Price per m²",
-        "Sided Multiplier",
-        "Line Value (ex GST)",
-    ] if col is not None
+    "Stock Name",
+    "Stock Group",
+    "Dimensions",
+    "Quantity",
+    "Total Area m²",
+    "Double Sided?",
+    "Price per m²",
+    "Sided Multiplier",
+    "Line Value (ex GST)",
 ]
+
+if "Lot ID" in data.columns:
+    pricing_cols.insert(0, "Lot ID")
+if "Item Description" in data.columns:
+    pricing_cols.insert(1, "Item Description")
 
 st.dataframe(data[pricing_cols], use_container_width=True)
 
 total_area = data["Total Area m²"].sum(skipna=True)
 total_value = data["Line Value (ex GST)"].sum(skipna=True)
 
-col1, col2 = st.columns(2)
-col1.metric("Total Area (m²)", f"{total_area:,.2f}")
-col2.metric("Total Value (ex GST)", f"${total_value:,.2f}")
+c1, c2 = st.columns(2)
+c1.metric("Total Area (m²)", f"{total_area:,.2f}")
+c2.metric("Total Value (ex GST)", f"${total_value:,.2f}")
 
-st.subheader("Step 3 – Final Excel preview")
+# ---------- Step 4: Final preview & download ----------
+
+st.subheader("Step 4 – Final Excel preview")
 
 st.dataframe(data, use_container_width=True)
 
-# ---- Excel Download ----
 output_filename = "bp_tender_priced.xlsx"
 
 with pd.ExcelWriter(output_filename, engine="xlsxwriter") as writer:

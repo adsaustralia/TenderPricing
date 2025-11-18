@@ -1,41 +1,71 @@
-# BP Tender SQM Calculator (Streamlit) – Grouped Stocks
+# BP Tender SQM Calculator (Streamlit) – Grouped Stocks & Double-Sided Control
 
 This Streamlit app loads a BP tender Excel file, calculates square metre usage,
-groups similar materials for pricing, lets you break stocks out of groups, and
-allows you to enable/disable double-sided pricing per line.
+lets you group similar materials for pricing, and gives you full control over
+double-sided lines.
 
 ---
 
-## Key Features
+## Features
+
+### 1. Base tender handling
 
 - Reads Excel columns:
   - **Dimensions** – used to calculate m² per item (assumes mm × mm)
   - **Print/Stock Specifications** – used to derive stock name and auto-detect single/double sided
   - **Total Annual Volume** – used as quantity
 
-- **Step 1 – Double-sided control**
-  - Auto-detects "Double Sided" based on text
-  - Shows an editable table with a **Double Sided?** checkbox per line
-  - You can manually tick/untick any line to override the automatic detection
+- Calculates:
+  - Area m² per item
+  - Total Area m² per line
+  - Line value based on group price and double-sided loading
 
-- **Step 2 – Grouped stock pricing**
-  - Each unique stock name can be assigned to a **group** in the sidebar
-  - All stocks in the same group share a **single price per m²**
-  - To:
-    - **Combine similar materials** → give them the same group name  
-    - **Separate a stock from a group** → give it a unique group name  
-  - You then enter **price per m² per group** (not per individual stock)
+---
 
-- **Double-sided loading**
-  - Configurable **Double-sided loading (%)** in the sidebar
-  - Double-sided lines are multiplied by: `1 + loading% / 100`
+### 2. Step 1 – Double-sided control
 
-- **Preview and export**
-  - Shows:
-    1. A table to adjust double-sided flags
-    2. Calculated pricing table
-    3. Full final dataset
-  - Exports `bp_tender_priced.xlsx` with all calculated values.
+- Auto-detects "Double Sided" from the specification text.
+- Shows an editable table with a **Double Sided?** checkbox per line.
+- You can manually tick/untick any line:
+  - Tick → double-sided loading applied
+  - Untick → no extra loading
+
+---
+
+### 3. Step 2 – Stock grouping for pricing
+
+- Each unique **Stock Name** is listed in a table with an editable **Group Name**.
+- Rules:
+  - Stocks with the **same Group Name** share one price per m².
+  - Stocks with **different Group Names** have different prices.
+
+This allows you to:
+
+- Combine similar materials (e.g. different synthetic variations) into a single group.
+- Separate any stock out of a group by giving it a unique Group Name.
+- Keep your original Excel unchanged while controlling pricing structure from the UI.
+
+---
+
+### 4. Step 3 – Pricing per group
+
+- In the sidebar, you enter **Price per m²** for each **Stock Group**.
+- You also set a **Double-sided loading (%)**.
+- For each line, the app calculates:
+
+`Line Value = Total Area m² × Price per m² × Sided Multiplier`
+
+where:
+
+- `Sided Multiplier = 1 + (loading% / 100)` for double-sided lines
+- `Sided Multiplier = 1` for single-sided lines
+
+---
+
+### 5. Step 4 – Preview & export
+
+- Shows a full preview of the final dataset.
+- Exports to **bp_tender_priced.xlsx** with all calculated values.
 
 ---
 
