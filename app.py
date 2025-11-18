@@ -1,375 +1,207 @@
-
-import streamlit as st
-import openpyxl
+import numpy as np
 import pandas as pd
-import re
-from io import BytesIO
-from openpyxl.utils import column_index_from_string, get_column_letter
-
-st.set_page_config(page_title="Excel SQM & Pricing Tool", layout="wide")
-st.title("📊 Excel SQM & Pricing Calculator — Multi-Sheet Version")
-
-st.write("""
-Upload your Excel file, define column/row settings, and input pricing rules.  
-The app will calculate **SQM and prices** for each sheet, display previews, and let you **download the updated Excel file or a combined summary**.
-""")
+import streamlit as st
 
 
-def normalize(s):
-    return re.sub(r'[^a-z0-9]+', '', str(s).lower()) if s else ""
+# ---------- Helpers ----------
+
+def parse_area_m2(dimensions: str):
+    """Convert '841mm x 1189mm' → m²"""
+    if pd.isna(dimensions):
+        return np.nan
+
+    s = str(dimensions).lower().replace(" ", "").replace("mm", "").replace("×", "x")
+    parts = s.split("x")
+    if len(parts) != 2:
+        return np.nan
+
+    try:
+        w = float(parts[0])
+        h = float(parts[1])
+    except Exception:
+        return np.nan
+
+    return (w * h) / 1_000_000.0
 
 
-SIDE_MULTIPLIERS = {
-    "2mm Screenboard": {"Single sided": 1.0, "Double sided": 1.2},
-    "3mm Screenboard": {"Single sided": 1.0, "Double sided": 1.2},
-    "3mm Corflute": {"Single sided": 1.0, "Double sided": 1.2},
-    "280gsm Synthetic (Plasnet)": {"Single sided": 1.0, "Double sided": 1.3},
-    "300gsm Silk": {"Single sided": 1.0, "Double sided": 1.2},
-    "250gsm Silk": {"Single sided": 1.0, "Double sided": 1.2},
-    "200gsm Gloss": {"Single sided": 1.0, "Double sided": 1.2},
-    "200gsm Matt": {"Single sided": 1.0, "Double sided": 1.2},
-    "200gsm Satin": {"Single sided": 1.0, "Double sided": 1.2},
-    "150gsm Silk": {"Single sided": 1.0, "Double sided": 1.2},
-    "Jellyfish Supercling (Synthetic)": {"Single sided": 1.0, "Double sided": 1.3},
-    "Jellyfish Supercling on Ferrous Substrate": {"Single sided": 1.0, "Double sided": 1.3},
-    "Jellyfish": {"Single sided": 1.0, "Double sided": 1.3},
-    "0.6mm Magnetic": {"Single sided": 1.0, "Double sided": 1.3},
-    "Duratran Backlit": {"Single sided": 1.0, "Double sided": 1.0},
-    "Yupo Synthetic Paper": {"Single sided": 1.0, "Double sided": 1.2},
-    "MPI 2126 Hi-Tack SAV": {"Single sided": 1.0, "Double sided": 1.2},
-    "MPI 2904 Easy Apply SAV": {"Single sided": 1.0, "Double sided": 1.2},
-    "MPI 2903 SAV": {"Single sided": 1.0, "Double sided": 1.2},
-    "SAV 3302": {"Single sided": 1.0, "Double sided": 1.2},
-    "3M 7725 SAV": {"Single sided": 1.0, "Double sided": 1.2},
-    "Metamark M7 SAV": {"Single sided": 1.0, "Double sided": 1.2},
-    "Arlon 8000 SAV": {"Single sided": 1.0, "Double sided": 1.2},
-    "Arlon 6700 SAV": {"Single sided": 1.0, "Double sided": 1.2},
-    "Ultra Tac SAV": {"Single sided": 1.0, "Double sided": 1.3},
-    "Polymeric SAV + ACM": {"Single sided": 1.0, "Double sided": 1.3},
-    "Generic SAV": {"Single sided": 1.0, "Double sided": 1.2},
-    "Mactac Glass Decor Dusted": {"Single sided": 1.0, "Double sided": 1.0},
-    "Frosted/Dusted Glass SAV": {"Single sided": 1.0, "Double sided": 1.0},
-    "Ultra Clear SAV": {"Single sided": 1.0, "Double sided": 1.0},
-    "Cool Grey SAV": {"Single sided": 1.0, "Double sided": 1.0},
-    "Matt Black CCV 900 Series": {"Single sided": 1.0, "Double sided": 1.0},
-    "Metamark Gloss Black M7": {"Single sided": 1.0, "Double sided": 1.0},
-    "Braille Acrylic Signs": {"Single sided": 1.0, "Double sided": 1.0},
-    "3mm Satin Black Acrylic": {"Single sided": 1.0, "Double sided": 1.0},
-    "Maxi T + PVC Assembly": {"Single sided": 1.0, "Double sided": 1.0},
-}
+def extract_stock_name(spec: str):
+    if pd.isna(spec):
+        return ""
+    return str(spec).split(",")[0].strip()
 
 
-def detect_category(material: str):
-    if not material:
-        return None
+def detect_sides(spec: str):
+    """Detect single/double sided. Default to Single Sided."""
+    if pd.isna(spec) or str(spec).strip() == "":
+        return "Single Sided"
 
-    s = str(material)
-    m = normalize(s)
-
-    if "screenboard" in m and "2mm" in m:
-        return "2mm Screenboard"
-    if "screenboard" in m and "3mm" in m:
-        return "3mm Screenboard"
-
-    if ("corflute" in m or "coreflute" in m) and "3mm" in m:
-        return "3mm Corflute"
-
-    if "expandedpvc" in m and "1mm" in m:
-        return "1mm Expanded PVC"
-    if "1mmpvc" in m and "expanded" not in m:
-        return "1mm PVC"
-
-    if "anodised" in m and "aluminium" in m:
-        return "1mm Anodised Aluminium"
-
-    if "satinblackacrylic" in m or ("satin" in m and "black" in m and "acrylic" in m):
-        return "3mm Satin Black Acrylic"
-
-    if "maxit" in m and "pvc" in m:
-        return "Maxi T + PVC Assembly"
-
-    if "brailleacrylicsigns" in m:
-        return "Braille Acrylic Signs"
-
-    if "plasnet" in m or ("synthetic" in m and "280gsm" in m):
-        return "280gsm Synthetic (Plasnet)"
-
-    if "titansilk" in m or ("300gsm" in m and "silk" in m):
-        return "300gsm Silk"
-    if "200gsm" in m and "silk" in m:
-        return "200gsm Silk"
-    if "150gsm" in m and "silk" in m:
-        return "150gsm Silk"
-
-    if "250gsm" in m and ("ecomatt" in m or "satin" in m or "silk" in m):
-        return "250gsm Silk"
-
-    if "200gsm" in m and "gloss" in m:
-        return "200gsm Gloss"
-    if "200gsm" in m and "matt" in m:
-        return "200gsm Matt"
-    if "200gsm" in m and "satin" in m:
-        return "200gsm Satin"
-
-    if "duratran" in m or ("backlit" in m and "duratran" in m):
-        return "Duratran Backlit"
-
-    if "yuppo" in m or "yuposyntheticpaper" in m:
-        return "Yupo Synthetic Paper"
-
-    if "jellyfish" in m and "supercling" in m:
-        if "ferrous" in m:
-            return "Jellyfish Supercling on Ferrous Substrate"
-        return "Jellyfish Supercling (Synthetic)"
-
-    if "jellyfish" in m:
-        return "Jellyfish"
-
-    if "magnetic" in m:
-        return "0.6mm Magnetic"
-
-    if "2126" in m and "sav" in m:
-        return "MPI 2126 Hi-Tack SAV"
-    if "2904" in m and "sav" in m:
-        return "MPI 2904 Easy Apply SAV"
-    if "2903" in m and "sav" in m:
-        return "MPI 2903 SAV"
-    if "3302" in m and "sav" in m:
-        return "SAV 3302"
-    if "7725" in m and "3m" in m:
-        return "3M 7725 SAV"
-    if "metamark" in m and "m7" in m:
-        return "Metamark M7 SAV"
-    if "arlon8000" in m or ("arlon" in m and "8000" in m):
-        return "Arlon 8000 SAV"
-    if "arlon6700" in m or ("arlon" in m and "6700" in m):
-        return "Arlon 6700 SAV"
-    if "ultratac" in m:
-        return "Ultra Tac SAV"
-    if "polymericsav" in m and "acm" in m:
-        return "Polymeric SAV + ACM"
-    if "sav" in m:
-        return "Generic SAV"
-
-    if "mactacglassdecor" in m or ("glassdecor" in m and "mactac" in m):
-        return "Mactac Glass Decor Dusted"
-    if "frosteddustedglasssav" in m or ("frosted" in m and "glass" in m):
-        return "Frosted/Dusted Glass SAV"
-    if "ultraclearsav" in m or ("ultra" in m and "clear" in m and "sav" in m):
-        return "Ultra Clear SAV"
-
-    if "coolgrey" in m and "sav" in m:
-        return "Cool Grey SAV"
-    if "mattblackccv900series" in m or ("matt" in m and "black" in m and "ccv900" in m):
-        return "Matt Black CCV 900 Series"
-    if "metamarkglossblackm7" in m or ("metamark" in m and "black" in m and "m7" in m):
-        return "Metamark Gloss Black M7"
-
-    return s.strip()
+    s = str(spec).lower()
+    if "double" in s:
+        return "Double Sided"
+    return "Single Sided"
 
 
-def parse_size(raw):
-    if not raw:
-        return None, None
-    s = str(raw).replace("×", "x").replace("X", "x").replace("*", "x")
-    nums = re.findall(r'\d+(?:\.\d+)?', s)
-    if len(nums) >= 2:
-        return float(nums[0]), float(nums[1])
-    return None, None
+# ---------- Streamlit App ----------
 
+st.set_page_config(page_title="BP Tender SQM Calculator", layout="wide")
+st.title("BP Tender – Square Metre Price Calculator")
 
-def parse_qty(raw):
-    if raw is None:
-        return None
-    if isinstance(raw, (int, float)):
-        return float(raw)
-    m = re.search(r'\d+(?:\.\d+)?', str(raw).replace(",", ""))
-    return float(m.group(0)) if m else None
+uploaded_file = st.file_uploader("Upload the tender Excel file", type=["xlsx", "xls"])
 
+if not uploaded_file:
+    st.info("Upload the Excel file to continue.")
+    st.stop()
 
-def clean_value(v):
-    if v is None:
-        return None
-    if isinstance(v, str) and v.strip().startswith("="):
-        return None
-    return v
+df = pd.read_excel(uploaded_file)
 
+required = ["Dimensions", "Print/Stock Specifications", "Total Annual Volume"]
+missing = [c for c in required if c not in df.columns]
+if missing:
+    st.error(f"Missing required columns: {missing}")
+    st.stop()
 
-uploaded_file = st.file_uploader("📤 Upload Excel file", type=["xlsx"])
+# ---------- Base processing ----------
 
-if uploaded_file:
+data = df.copy()
+data["Area m² (each)"] = data["Dimensions"].apply(parse_area_m2)
+data["Stock Name"] = data["Print/Stock Specifications"].apply(extract_stock_name)
+data["Sided (auto)"] = data["Print/Stock Specifications"].apply(detect_sides)
+data["Double Sided?"] = data["Sided (auto)"] == "Double Sided"
+data["Quantity"] = data["Total Annual Volume"]
+data["Total Area m²"] = data["Area m² (each)"] * data["Quantity"]
 
-    wb = openpyxl.load_workbook(uploaded_file, data_only=True)
-    sheet_names = wb.sheetnames
+st.subheader("Step 1 – Review & adjust double-sided lines")
 
-    st.subheader("⚙️ Excel Structure Settings")
-    col1, col2 = st.columns(2)
-    with col1:
-        start_col = st.text_input("Start Column", value="AC")
-        end_col = st.text_input("End Column", value="IG")
-    with col2:
-        row_size = st.number_input("Row (Size)", value=5)
-        row_material = st.number_input("Row (Material)", value=6)
-        row_qty = st.number_input("Row (Quantity)", value=155)
-        row_sqm = st.number_input("Row (SQM Output)", value=156)
-        row_price = st.number_input("Row (Price Output)", value=157)
+display_cols = [
+    col for col in [
+        "Lot ID" if "Lot ID" in data.columns else None,
+        "Item Description" if "Item Description" in data.columns else None,
+        "Dimensions",
+        "Print/Stock Specifications",
+        "Quantity",
+        "Area m² (each)",
+        "Total Area m²",
+        "Sided (auto)",
+        "Double Sided?",
+    ] if col is not None
+]
 
-    st.subheader("🧮 Print Side")
-    side_option = st.radio(
-        "Select print side:",
-        options=["Single sided", "Double sided"],
-        index=0,
-        horizontal=True,
+edited = st.data_editor(
+    data[display_cols],
+    use_container_width=True,
+    num_rows="dynamic",
+)
+
+# Update the main frame with edited double-sided flags
+data["Double Sided?"] = edited["Double Sided?"].astype(bool)
+
+st.markdown(
+    "You can tick/untick **Double Sided?** above to enable/disable double-sided pricing for any line."
+)
+
+# ---------- Stock grouping & pricing ----------
+
+st.sidebar.header("Pricing & Stock Grouping")
+
+# Unique stocks
+unique_stocks = sorted(x for x in data["Stock Name"].dropna().unique() if str(x).strip())
+
+# Initialise grouping in session_state
+if "stock_groups" not in st.session_state:
+    st.session_state["stock_groups"] = {s: s for s in unique_stocks}
+else:
+    # Ensure all current stocks are present
+    for s in unique_stocks:
+        st.session_state["stock_groups"].setdefault(s, s)
+
+st.sidebar.subheader("Stock → Group mapping")
+
+stock_groups = {}
+for stock in unique_stocks:
+    default_group = st.session_state["stock_groups"].get(stock, stock)
+    group_name = st.sidebar.text_input(
+        f"Group for '{stock}'",
+        value=default_group,
+        key=f"group_{stock}",
+    )
+    stock_groups[stock] = group_name
+    st.session_state["stock_groups"][stock] = group_name
+
+data["Stock Group"] = data["Stock Name"].map(stock_groups).fillna("Unassigned")
+
+# Groups = all distinct group names
+group_names = sorted(set(stock_groups.values()))
+
+st.sidebar.subheader("Price per m² (by group)")
+
+group_prices = {}
+for group in group_names:
+    group_prices[group] = st.sidebar.number_input(
+        f"{group}",
+        min_value=0.0,
+        value=0.0,
+        step=0.1,
+        key=f"price_group_{group}",
     )
 
-    st.subheader("📄 Sheet Selection")
-    process_all = st.checkbox("Process all sheets", value=True)
-    sheet_choice = None
-    if not process_all:
-        sheet_choice = st.selectbox("Select sheet", sheet_names)
+# Double-sided loading
+double_loading_pct = st.sidebar.number_input(
+    "Double-sided loading (%)",
+    min_value=0.0,
+    value=25.0,
+    step=1.0,
+)
 
-    start_idx = column_index_from_string(start_col)
-    end_idx = column_index_from_string(end_col)
+data["Price per m²"] = data["Stock Group"].map(group_prices).fillna(0.0)
 
-    st.subheader("🧾 Materials & Category Overrides")
+double_mult = 1.0 + double_loading_pct / 100.0
+data["Sided Multiplier"] = np.where(data["Double Sided?"], double_mult, 1.0)
 
-    detected_materials = set()
-    source_sheets = sheet_names if process_all else [sheet_choice]
-    for sname in source_sheets:
-        ws = wb[sname]
-        for c in range(start_idx, end_idx + 1):
-            col = get_column_letter(c)
-            raw_mat = clean_value(ws[f"{col}{row_material}"].value)
-            if raw_mat:
-                detected_materials.add(str(raw_mat).strip())
+data["Line Value (ex GST)"] = (
+    data["Total Area m²"] * data["Price per m²"] * data["Sided Multiplier"]
+)
 
-    if not detected_materials:
-        st.error("❌ No materials found. Check row/column settings.")
-        st.stop()
+st.subheader("Step 2 – Calculated pricing")
 
-    material_categories = {}
-    for mat in sorted(detected_materials):
-        default_cat = detect_category(mat) or mat
-        c1, c2 = st.columns([2, 2])
-        with c1:
-            st.write(mat)
-        with c2:
-            override = st.text_input(
-                "Category",
-                value=default_cat,
-                key=f"cat_{normalize(mat)}",
-                help="Edit this if the auto group is wrong. Materials with the same category share one rate.",
-            )
-        cat_final = override.strip() or default_cat
-        material_categories[mat] = cat_final
+pricing_cols = [
+    col for col in [
+        "Lot ID" if "Lot ID" in data.columns else None,
+        "Item Description" if "Item Description" in data.columns else None,
+        "Stock Name",
+        "Stock Group",
+        "Dimensions",
+        "Quantity",
+        "Total Area m²",
+        "Double Sided?",
+        "Price per m²",
+        "Sided Multiplier",
+        "Line Value (ex GST)",
+    ] if col is not None
+]
 
-    categories_present = sorted(set(material_categories.values()))
+st.dataframe(data[pricing_cols], use_container_width=True)
 
-    st.markdown("---")
-    st.subheader("💰 Category Pricing & Enable/Disable")
+total_area = data["Total Area m²"].sum(skipna=True)
+total_value = data["Line Value (ex GST)"].sum(skipna=True)
 
-    base_rates = {}
-    category_enabled = {}
+col1, col2 = st.columns(2)
+col1.metric("Total Area (m²)", f"{total_area:,.2f}")
+col2.metric("Total Value (ex GST)", f"${total_value:,.2f}")
 
-    for cat in categories_present:
-        col_a, col_b = st.columns([1, 2])
-        with col_a:
-            enabled = st.checkbox(
-                f"Use '{cat}'",
-                value=True,
-                key=f"enable_{normalize(cat)}",
-            )
-        with col_b:
-            base = st.number_input(
-                f"Base rate (Single sided, AUD/m²) for '{cat}'",
-                min_value=0.0,
-                value=0.0,
-                step=0.1,
-                key=f"base_{normalize(cat)}",
-            )
-        category_enabled[cat] = enabled
-        base_rates[cat] = base
+st.subheader("Step 3 – Final Excel preview")
 
-    def get_effective_rate(material: str, side: str):
-        if material is None:
-            return None
-        cat = material_categories.get(material) or detect_category(material) or material
-        if not category_enabled.get(cat, True):
-            return None
-        base = base_rates.get(cat, 0.0)
-        if base <= 0:
-            return None
-        mult = SIDE_MULTIPLIERS.get(cat, {}).get(side, 1.0)
-        return base * mult
+st.dataframe(data, use_container_width=True)
 
-    if st.button("🚀 Process & Calculate"):
-        summary = []
+# ---- Excel Download ----
+output_filename = "bp_tender_priced.xlsx"
 
-        def process_sheet(ws, sheetname):
-            rows = []
-            total_cost = 0
+with pd.ExcelWriter(output_filename, engine="xlsxwriter") as writer:
+    data.to_excel(writer, index=False, sheet_name="Priced Tender")
 
-            for c in range(start_idx, end_idx + 1):
-                col = get_column_letter(c)
-
-                raw_size = clean_value(ws[f"{col}{row_size}"].value)
-                raw_mat = clean_value(ws[f"{col}{row_material}"].value)
-                raw_qty = clean_value(ws[f"{col}{row_qty}"].value)
-
-                w, h = parse_size(raw_size)
-                qty = parse_qty(raw_qty)
-                rate = get_effective_rate(raw_mat, side_option)
-                sqm = price = None
-
-                if w and h and qty:
-                    sqm = (w / 1000) * (h / 1000) * qty
-                    if rate is not None:
-                        price = round(sqm * rate, 2)
-                        total_cost += price
-                    ws[f"{col}{row_sqm}"].value = sqm
-                    ws[f"{col}{row_price}"].value = price
-
-                rows.append({
-                    "Column": col,
-                    "Material": raw_mat,
-                    "Category": material_categories.get(raw_mat) or detect_category(raw_mat) or raw_mat,
-                    "Size": raw_size,
-                    "Qty": qty,
-                    "Rate": rate,
-                    "SQM": sqm,
-                    "Price": price,
-                })
-
-            ws[f"{end_col}{row_sqm}"] = "TOTAL"
-            ws[f"{end_col}{row_price}"] = total_cost
-            return pd.DataFrame(rows), total_cost
-
-        if process_all:
-            for sname in sheet_names:
-                df, total = process_sheet(wb[sname], sname)
-                st.markdown(f"### 📄 {sname}")
-                st.dataframe(df)
-                st.success(f"Subtotal: ${total:,.2f}")
-                summary.append({"Sheet": sname, "Total": total})
-        else:
-            df, total = process_sheet(wb[sheet_choice], sheet_choice)
-            st.markdown(f"### 📄 {sheet_choice}")
-            st.dataframe(df)
-            st.success(f"Total: ${total:,.2f}")
-            summary.append({"Sheet": sheet_choice, "Total": total})
-
-        st.subheader("📘 Combined Totals")
-        summary_df = pd.DataFrame(summary)
-        st.dataframe(summary_df)
-        st.success(f"GRAND TOTAL: ${summary_df['Total'].sum():,.2f}")
-
-        excel_bytes = BytesIO()
-        wb.save(excel_bytes)
-        excel_bytes.seek(0)
-
-        st.download_button(
-            "⬇️ Download Updated Excel",
-            excel_bytes,
-            "Updated_Pricing.xlsx",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+with open(output_filename, "rb") as f:
+    st.download_button(
+        "Download Final Priced Excel",
+        data=f,
+        file_name=output_filename,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
