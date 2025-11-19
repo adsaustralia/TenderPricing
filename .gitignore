@@ -3,5 +3,5 @@ __pycache__/
 .env
 .vscode/
 .DS_Store
-bp_tender_priced*.xlsx
+*_priced_v*.xlsx
 price_memory.json

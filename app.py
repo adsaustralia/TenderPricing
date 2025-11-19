@@ -2,6 +2,8 @@ import re
 import io
 import os
 import json
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -237,69 +239,84 @@ def save_price_memory(group_prices, stock_prices):
 # ---------------------------------------------------------
 
 
-st.set_page_config(layout="wide", page_title="BP Tender SQM Calculator v11", page_icon="🧮")
+st.set_page_config(layout="wide", page_title="ADS Tender SQM Calculator v12", page_icon="🧮")
+
+NAVY = "#22314A"
+ORANGE = "#FF5E19"
+BG = "#FFF7F0"
 
 st.markdown(
-    '''<style>
-    .stApp {
-        background-color: #fff7ed;
-    }
-    [data-testid="stSidebar"] {
-        background-color: #fffbeb;
-        border-right: 1px solid #fed7aa;
-    }
-    .block-container {
+    f'''<style>
+    .stApp {{
+        background-color: {BG};
+    }}
+    [data-testid="stSidebar"] {{
+        background-color: #FFF9F3;
+        border-right: 1px solid #E2E8F0;
+    }}
+    [data-testid="stHeader"] {{
+        background: linear-gradient(180deg, {NAVY} 0%, {NAVY} 70%, {ORANGE} 70%, {ORANGE} 100%);
+        color: white;
+    }}
+    .block-container {{
         padding-top: 1.5rem;
         padding-bottom: 3rem;
-    }
-    h1, h2, h3 {
-        color: #ea580c;
-    }
-    .orange-pill {
-        background: #f97316;
+    }}
+    h1, h2, h3 {{
+        color: {NAVY};
+    }}
+    .orange-pill {{
+        background: {ORANGE};
         color: white;
         padding: 0.25rem 0.75rem;
         border-radius: 999px;
         font-size: 0.8rem;
         display: inline-block;
         margin-bottom: 0.5rem;
-    }
-    .stButton>button {
-        background-color: #f97316;
+    }}
+    .stButton>button {{
+        background-color: {ORANGE};
         color: white;
         border-radius: 999px;
-        border: 1px solid #ea580c;
+        border: 1px solid {ORANGE};
         padding: 0.4rem 1.2rem;
         font-weight: 600;
-    }
-    .stButton>button:hover {
-        background-color: #ea580c;
-        border-color: #c2410c;
-    }
-    .metric-container {
+    }}
+    .stButton>button:hover {{
+        background-color: #e25515;
+        border-color: #c7420f;
+    }}
+    .metric-container {{
         padding: 0.75rem 1rem;
         border-radius: 0.75rem;
         background: white;
-        border: 1px solid #fed7aa;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.03);
-    }
-    .orange-chip {
-        background: #ffedd5;
-        color: #9a3412;
+        border: 1px solid #E2E8F0;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    }}
+    .orange-chip {{
+        background: #FFE0C7;
+        color: {NAVY};
         padding: 0.15rem 0.5rem;
         border-radius: 999px;
         font-size: 0.7rem;
         font-weight: 600;
         display: inline-block;
         margin-right: 0.25rem;
-    }
+    }}
     </style>''',
     unsafe_allow_html=True,
 )
 
-st.markdown('<div class="orange-pill">BP Tender SQM Calculator</div>', unsafe_allow_html=True)
-st.title("🧮 Pricing & Grouping Console")
-st.caption("Option B grouping · stock & group price memory · orange theme UI")
+logo_path = Path(__file__).with_name("ads_logo.png")
+
+header_cols = st.columns([1, 4])
+with header_cols[0]:
+    if logo_path.exists():
+        st.image(str(logo_path), use_column_width=True)
+with header_cols[1]:
+    st.markdown('<div class="orange-pill">ADS Tender SQM Calculator</div>', unsafe_allow_html=True)
+    st.title("Pricing & Grouping Console")
+    st.caption("Option B grouping · stock & group price memory · ADS orange & navy theme")
 
 uploaded = st.file_uploader("Upload tender Excel", type=["xlsx", "xls"])
 if not uploaded:
@@ -390,9 +407,11 @@ else:
 groups_df = st.session_state["groups_df"]
 
 st.markdown(
-    """- **Initial Group** is auto-generated from thickness / GSM / SAV brand+code.  
-- **Assigned Group** is what actually drives pricing.  
-- Give multiple stocks the same Assigned Group to price them together."""
+    '- **Initial Group** is auto-generated from thickness / GSM / SAV brand+code.  
+'
+    '- **Assigned Group** is what actually drives pricing.  
+'
+    '- Give multiple stocks the same Assigned Group to price them together.'
 )
 
 with st.expander("🔍 Search stocks & groups", expanded=False):
@@ -437,7 +456,7 @@ all_assigned = sorted(groups_df["Assigned Group"].unique())
 merge_selection = st.multiselect("Groups to merge", all_assigned, help="Pick two or more logical groups to merge.")
 merge_target = st.text_input("Merged group name", value=merge_selection[0] if merge_selection else "")
 
-merge_col1, merge_col2 = st.columns([1, 2])
+merge_col1, _ = st.columns([1, 2])
 with merge_col1:
     if st.button("🔗 Merge selected groups"):
         if merge_selection and merge_target:
@@ -449,7 +468,7 @@ with merge_col1:
 stock_to_group = dict(zip(groups_df["Stock Name"], groups_df["Assigned Group"]))
 data["Material Group"] = data["Stock Name"].map(stock_to_group).fillna("Unassigned")
 
-# Step 3 – Pricing
+# Step 3 – Pricing & double-sided loading
 st.sidebar.header("🎯 Pricing & Double-Sided Loading")
 
 saved_group_prices, saved_stock_prices = load_price_memory()
@@ -535,7 +554,7 @@ group_summary = group_summary[
 
 st.dataframe(group_summary, use_container_width=True)
 
-# Step 4 – Final view & download
+# Final view & download
 st.markdown("### 4. Final calculated lines & export")
 
 data["Friendly Group Name"] = data["Material Group"].apply(friendly_group_name)
@@ -584,6 +603,6 @@ with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
 st.download_button(
     "⬇️ Download priced tender as Excel",
     data=buffer.getvalue(),
-    file_name="bp_tender_priced_v11.xlsx",
+    file_name="ads_tender_priced_v12.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )

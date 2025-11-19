@@ -1,21 +1,17 @@
-# BP Tender SQM Calculator v11 (Streamlit, Orange UI)
+# ADS Tender SQM Calculator v12 (Streamlit, ADS Orange + Navy)
 
-This version adds a **clean orange theme** and keeps all the v10 functionality.
+This version applies **ADS Australia branding** and keeps all functionality:
 
-## Visual changes
+- Dark navy header bar with orange stripe (via Streamlit header styling)
+- ADS logo on the **top-left** of the main console
+- ADS orange (`#FF5E19`) used for pill label, buttons, and chips
+- Soft warm background for the working area
 
-- Soft orange background for app and sidebar
-- Orange pill tag under the title
-- Orange rounded buttons with hover state
-- Chip-style tips above the double-sided table
-- Card-style containers around summary metrics
-- Steps clearly labelled 1–4
-
-## Functional features
+Functional features:
 
 - Option B material grouping (thickness + substrate / GSM + finish / SAV brand+code)
 - Editable group assignments with dropdown
-- Search view for stocks & groups (under an expander)
+- Search view for stocks & groups (within an expander)
 - Merge-groups tool
 - Persistent price memory:
   - Per Material Group
@@ -55,3 +51,5 @@ pip install -r requirements.txt
 ```bash
 streamlit run app.py
 ```
+
+The ADS logo is included as `ads_logo.png` and is displayed at the top-left of the console.
