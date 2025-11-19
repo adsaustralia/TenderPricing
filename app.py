@@ -220,9 +220,9 @@ def friendly_group_name(group_key: str) -> str:
 # ---------------------------------------------------------
 
 
-st.set_page_config(layout="wide", page_title="BP Tender SQM Calculator v7")
-st.title("BP Tender – Square Metre Calculator (v7)")
-st.caption("Option B grouping + search, merge groups, group preview, double-sided control")
+st.set_page_config(layout="wide", page_title="BP Tender SQM Calculator v9")
+st.title("BP Tender – Square Metre Calculator (v9)")
+st.caption("Option B grouping + search, merge groups, group preview with price & total value, double-sided control")
 
 uploaded = st.file_uploader("Upload tender Excel", type=["xlsx", "xls"])
 if not uploaded:
@@ -315,11 +315,11 @@ else:
 groups_df = st.session_state["groups_df"]
 
 st.markdown(
-    """- **Initial Group** is auto-generated based on thickness, substrate, GSM, or SAV brand/code.
-
-- **Assigned Group** is what actually controls pricing.
-
-- Give multiple stocks the same Assigned Group to price them together."""
+    "- **Initial Group** is auto-generated based on thickness, substrate, GSM, or SAV brand/code.  
+"
+    "- **Assigned Group** is what actually controls pricing.  
+"
+    "- Give multiple stocks the same Assigned Group to price them together."
 )
 
 # Search bar (read-only view)
@@ -377,30 +377,6 @@ stock_to_group = dict(zip(groups_df["Stock Name"], groups_df["Assigned Group"]))
 data["Material Group"] = data["Stock Name"].map(stock_to_group).fillna("Unassigned")
 
 # ---------------------------------------------------------
-# Step 2.5 – Group preview panel
-# ---------------------------------------------------------
-
-st.subheader("Group Preview")
-
-group_summary = (
-    data.groupby("Material Group")
-    .agg(
-        Materials=("Stock Name", "nunique"),
-        Lines=("Stock Name", "count"),
-        Total_Area_m2=("Total Area m²", "sum"),
-    )
-    .reset_index()
-)
-
-group_summary["Friendly Name"] = group_summary["Material Group"].apply(friendly_group_name)
-
-group_summary = group_summary[
-    ["Material Group", "Friendly Name", "Materials", "Lines", "Total_Area_m2"]
-]
-
-st.dataframe(group_summary, use_container_width=True)
-
-# ---------------------------------------------------------
 # Step 3 – Pricing per material group
 # ---------------------------------------------------------
 
@@ -435,6 +411,32 @@ data["Sided Multiplier"] = np.where(data["Double Sided?"], double_mult, 1.0)
 data["Line Value (ex GST)"] = (
     data["Total Area m²"] * data["Price per m²"] * data["Sided Multiplier"]
 )
+
+# ---------------------------------------------------------
+# Group Preview with Price & Total Value
+# ---------------------------------------------------------
+
+st.subheader("Group Preview")
+
+group_summary = (
+    data.groupby("Material Group")
+    .agg(
+        Materials=("Stock Name", "nunique"),
+        Lines=("Stock Name", "count"),
+        Total_Area_m2=("Total Area m²", "sum"),
+        Price_per_m2=("Price per m²", "max"),
+        Group_Value_ex_GST=("Line Value (ex GST)", "sum"),
+    )
+    .reset_index()
+)
+
+group_summary["Friendly Name"] = group_summary["Material Group"].apply(friendly_group_name)
+
+group_summary = group_summary[
+    ["Material Group", "Friendly Name", "Price_per_m2", "Materials", "Lines", "Total_Area_m2", "Group_Value_ex_GST"]
+]
+
+st.dataframe(group_summary, use_container_width=True)
 
 # ---------------------------------------------------------
 # Step 4 – Final view & download
@@ -479,6 +481,6 @@ with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
 st.download_button(
     "Download priced tender as Excel",
     data=buffer.getvalue(),
-    file_name="bp_tender_priced.xlsx",
+    file_name="bp_tender_priced_v9.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )

@@ -1,27 +1,32 @@
-# BP Tender SQM Calculator v7 (Streamlit)
+# BP Tender SQM Calculator v9 (Streamlit)
 
-This app reads a tender Excel file and prices items by **square metre** with:
+This version adds **total value per group** into the **Group Preview** panel and Group Summary sheet.
+
+Features:
 
 - Option B material grouping (thickness + substrate / GSM + finish / SAV brand+code)
 - Editable group assignments with dropdown
 - Search view for stocks & groups
-- Group merge tool
-- Group preview panel (materials, lines, total m²)
-- Double-sided override column + global loading %
+- Merge-groups tool
+- Group Preview with:
+  - Material Group
+  - Friendly Name
+  - **Price per m²**
+  - **Group value (ex GST)**
+  - Number of materials
+  - Number of lines
+  - Total area (m²)
+- Double-sided override + global loading %
 - Per-group price per m²
 - Excel export with:
   - `Priced Tender` sheet
-  - `Group Summary` sheet
+  - `Group Summary` sheet (includes price per m² and group value)
 
 ## Required Excel Columns
 
-Your Excel must contain at least:
-
-- `Dimensions` (e.g. `841mm x 1189mm`, assumed mm)
+- `Dimensions`
 - `Print/Stock Specifications`
 - `Total Annual Volume`
-
-Other columns (e.g. `Lot ID`, `Item Description`) are optional and will be passed through.
 
 ## Install
 

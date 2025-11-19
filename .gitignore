@@ -3,4 +3,4 @@ __pycache__/
 .env
 .vscode/
 .DS_Store
-bp_tender_priced.xlsx
+bp_tender_priced*.xlsx
