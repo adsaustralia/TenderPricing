@@ -9,6 +9,11 @@ import pandas as pd
 import streamlit as st
 
 
+# ---------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------
+
+
 def parse_area_m2(dimensions: str):
     """Convert '841mm x 1189mm' → m² (assumes mm × mm)."""
     if pd.isna(dimensions):
@@ -213,7 +218,7 @@ def save_price_memory(group_prices, stock_prices):
         pass
 
 
-st.set_page_config(layout="wide", page_title="ADS Tender SQM Calculator v12.2", page_icon="🧮")
+st.set_page_config(layout="wide", page_title="ADS Tender SQM Calculator v12.3", page_icon="🧮")
 
 NAVY = "#22314A"
 ORANGE = "#FF5E19"
@@ -380,12 +385,13 @@ else:
 
 groups_df = st.session_state["groups_df"]
 
+# IMPORTANT: use triple-quoted string to avoid unterminated literal issues
 st.markdown(
-    "- **Initial Group** is auto-generated from thickness / GSM / SAV brand+code.  
-"
-    "- **Assigned Group** is what actually drives pricing.  
-"
-    "- Give multiple stocks the same Assigned Group to price them together."
+    """
+- **Initial Group** is auto-generated from thickness / GSM / SAV brand+code.  
+- **Assigned Group** is what actually drives pricing.  
+- Give multiple stocks the same Assigned Group to price them together.
+    """
 )
 
 with st.expander("🔍 Search stocks & groups", expanded=False):
@@ -574,6 +580,6 @@ with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
 st.download_button(
     "⬇️ Download priced tender as Excel",
     data=buffer.getvalue(),
-    file_name="ads_tender_priced_v12_2.xlsx",
+    file_name="ads_tender_priced_v12_3.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )

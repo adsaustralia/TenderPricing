@@ -1,6 +1,6 @@
-# ADS Tender SQM Calculator v12.2 (Streamlit, ADS Orange + Navy)
+# ADS Tender SQM Calculator v12.3 (Streamlit, ADS Orange + Navy)
 
-This is a clean rebuilt version with:
+This version fixes the multiline markdown syntax problem and keeps all functionality:
 
 - ADS orange + navy theme
 - ADS logo on the top-left of the console (`ads_logo.png`)
