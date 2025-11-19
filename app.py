@@ -1,5 +1,7 @@
 import re
 import io
+import os
+import json
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -216,13 +218,48 @@ def friendly_group_name(group_key: str) -> str:
 
 
 # ---------------------------------------------------------
+# Price memory (persist across runs in a local JSON file)
+# ---------------------------------------------------------
+
+
+MEMORY_FILE = "price_memory.json"
+
+
+def load_price_memory():
+    if not os.path.exists(MEMORY_FILE):
+        return {}, {}
+    try:
+        with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        group_prices = data.get("group_prices", {})
+        stock_prices = data.get("stock_prices", {})
+        group_prices = {k: float(v) for k, v in group_prices.items()}
+        stock_prices = {k: float(v) for k, v in stock_prices.items()}
+        return group_prices, stock_prices
+    except Exception:
+        return {}, {}
+
+
+def save_price_memory(group_prices, stock_prices):
+    data = {
+        "group_prices": group_prices,
+        "stock_prices": stock_prices,
+    }
+    try:
+        with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------
 # Streamlit app
 # ---------------------------------------------------------
 
 
-st.set_page_config(layout="wide", page_title="BP Tender SQM Calculator v9.1")
-st.title("BP Tender – Square Metre Calculator (v9.1)")
-st.caption("Option B grouping + search, merge groups, group preview with price & total value, double-sided control")
+st.set_page_config(layout="wide", page_title="BP Tender SQM Calculator v10")
+st.title("BP Tender – Square Metre Calculator (v10)")
+st.caption("Option B grouping + group & stock price memory, search, merge groups, group preview with price & total value, double-sided control")
 
 uploaded = st.file_uploader("Upload tender Excel", type=["xlsx", "xls"])
 if not uploaded:
@@ -375,10 +412,12 @@ stock_to_group = dict(zip(groups_df["Stock Name"], groups_df["Assigned Group"]))
 data["Material Group"] = data["Stock Name"].map(stock_to_group).fillna("Unassigned")
 
 # ---------------------------------------------------------
-# Step 3 – Pricing per material group
+# Step 3 – Pricing per material group + stock overrides
 # ---------------------------------------------------------
 
 st.sidebar.header("Pricing & Double-Sided Loading")
+
+saved_group_prices, saved_stock_prices = load_price_memory()
 
 group_names = sorted(g for g in data["Material Group"].dropna().unique() if str(g).strip())
 group_prices = {}
@@ -386,13 +425,30 @@ group_prices = {}
 st.sidebar.subheader("Price per m² by material group")
 
 for g in group_names:
+    default_val = float(saved_group_prices.get(g, 0.0))
     group_prices[g] = st.sidebar.number_input(
         g,
         min_value=0.0,
-        value=0.0,
+        value=default_val,
         step=0.1,
-        key=f"price_{g}",
+        key=f"price_group_{g}",
     )
+
+st.sidebar.subheader("Optional stock-specific overrides")
+
+stock_prices = {}
+unique_stock_names = sorted(s for s in data["Stock Name"].dropna().unique() if str(s).strip())
+
+with st.sidebar.expander("Stock overrides (advanced)", expanded=False):
+    for s in unique_stock_names:
+        default_val = float(saved_stock_prices.get(s, 0.0))
+        stock_prices[s] = st.number_input(
+            s,
+            min_value=0.0,
+            value=default_val,
+            step=0.1,
+            key=f"price_stock_{s}",
+        )
 
 double_loading_pct = st.sidebar.number_input(
     "Double-sided loading (%)",
@@ -402,7 +458,19 @@ double_loading_pct = st.sidebar.number_input(
     help="Extra percentage added for double-sided lines.",
 )
 
-data["Price per m²"] = data["Material Group"].map(group_prices).fillna(0.0)
+
+def compute_unit_price(row):
+    """Use stock-specific price if > 0, otherwise fall back to group price."""
+    group = row.get("Material Group", "")
+    stock = row.get("Stock Name", "")
+    sp = float(stock_prices.get(stock, 0.0) or 0.0)
+    if sp > 0:
+        return sp
+    return float(group_prices.get(group, 0.0) or 0.0)
+
+
+data["Price per m²"] = data.apply(compute_unit_price, axis=1)
+
 double_mult = 1.0 + double_loading_pct / 100.0
 data["Sided Multiplier"] = np.where(data["Double Sided?"], double_mult, 1.0)
 
@@ -470,7 +538,18 @@ c1, c2 = st.columns(2)
 c1.metric("Total Area (m²)", f"{total_area:,.2f}")
 c2.metric("Total Value (ex GST)", f"${total_value:,.2f}")
 
+# ---------------------------------------------------------
+# Save price memory (group + stock) for next time
+# ---------------------------------------------------------
+
+clean_group_prices = {k: float(v) for k, v in group_prices.items() if float(v) > 0}
+clean_stock_prices = {k: float(v) for k, v in stock_prices.items() if float(v) > 0}
+save_price_memory(clean_group_prices, clean_stock_prices)
+
+# ---------------------------------------------------------
 # Excel export
+# ---------------------------------------------------------
+
 buffer = io.BytesIO()
 with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
     data.to_excel(writer, index=False, sheet_name="Priced Tender")
@@ -479,6 +558,6 @@ with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
 st.download_button(
     "Download priced tender as Excel",
     data=buffer.getvalue(),
-    file_name="bp_tender_priced_v9_1.xlsx",
+    file_name="bp_tender_priced_v10.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )

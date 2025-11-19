@@ -1,6 +1,20 @@
-# BP Tender SQM Calculator v9.1 (Streamlit)
+# BP Tender SQM Calculator v10 (Streamlit)
 
-This version fixes the string literal syntax issue and keeps all v9 features:
+This version adds **persistent price memory**:
+
+- Remembers **price per Material Group** across runs.
+- Remembers **price per Stock Name** across runs.
+- Uses a local JSON file: `price_memory.json` in the app folder.
+
+## Price logic
+
+For each line:
+
+1. If a **stock-specific price** is set (> 0), it is used.
+2. Otherwise, the **material group price** is used.
+3. Double-sided lines apply the global double-sided loading %.
+
+## Features
 
 - Option B material grouping (thickness + substrate / GSM + finish / SAV brand+code)
 - Editable group assignments with dropdown
@@ -9,13 +23,13 @@ This version fixes the string literal syntax issue and keeps all v9 features:
 - Group Preview with:
   - Material Group
   - Friendly Name
-  - Price per m²
+  - Price per m² (max within group)
   - Group value (ex GST)
   - Number of materials
   - Number of lines
   - Total area (m²)
 - Double-sided override + global loading %
-- Per-group price per m²
+- Per-group price per m² + per-stock overrides
 - Excel export with:
   - `Priced Tender` sheet
   - `Group Summary` sheet
@@ -37,3 +51,5 @@ pip install -r requirements.txt
 ```bash
 streamlit run app.py
 ```
+
+A file called `price_memory.json` will be created/updated in the same folder, storing your group and stock prices for future runs.

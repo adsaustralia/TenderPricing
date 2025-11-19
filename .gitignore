@@ -4,3 +4,4 @@ __pycache__/
 .vscode/
 .DS_Store
 bp_tender_priced*.xlsx
+price_memory.json
