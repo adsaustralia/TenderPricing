@@ -9,16 +9,10 @@ import pandas as pd
 import streamlit as st
 
 
-# ---------------------------------------------------------
-# Helper functions
-# ---------------------------------------------------------
-
-
 def parse_area_m2(dimensions: str):
     """Convert '841mm x 1189mm' → m² (assumes mm × mm)."""
     if pd.isna(dimensions):
         return np.nan
-
     s = (
         str(dimensions)
         .lower()
@@ -29,13 +23,11 @@ def parse_area_m2(dimensions: str):
     parts = s.split("x")
     if len(parts) != 2:
         return np.nan
-
     try:
         w = float(parts[0])
         h = float(parts[1])
     except Exception:
         return np.nan
-
     return (w * h) / 1_000_000.0
 
 
@@ -50,7 +42,6 @@ def detect_sides(spec: str):
     """Detect single/double sided from text."""
     if pd.isna(spec):
         return "Single Sided"
-
     s = str(spec).lower()
     if "double" in s:
         return "Double Sided"
@@ -68,16 +59,10 @@ def _first_match(pattern: str, text: str):
         return m.group(0)
 
 
-# ---------------------------------------------------------
-# Option B – material grouping logic
-# ---------------------------------------------------------
-
-
 def material_group_key_medium(stock: str) -> str:
     """Derive a medium-detail material group key from a stock name (Option B)."""
     if not isinstance(stock, str):
         return ""
-
     s_raw = stock
     s = stock.lower()
 
@@ -187,7 +172,6 @@ def friendly_group_name(group_key: str) -> str:
     """Nicer label for a group key."""
     if not isinstance(group_key, str):
         return ""
-
     g = group_key
     if g.startswith("SAV – "):
         core = g.replace("SAV – ", "").strip()
@@ -197,11 +181,6 @@ def friendly_group_name(group_key: str) -> str:
     if "Backlit Film" in g:
         return g.replace("Backlit Film –", "Backlit Film ").strip()
     return g
-
-
-# ---------------------------------------------------------
-# Price memory (persist across runs in a local JSON file)
-# ---------------------------------------------------------
 
 
 MEMORY_FILE = "price_memory.json"
@@ -234,19 +213,15 @@ def save_price_memory(group_prices, stock_prices):
         pass
 
 
-# ---------------------------------------------------------
-# Streamlit app
-# ---------------------------------------------------------
-
-
-st.set_page_config(layout="wide", page_title="ADS Tender SQM Calculator v12", page_icon="🧮")
+st.set_page_config(layout="wide", page_title="ADS Tender SQM Calculator v12.2", page_icon="🧮")
 
 NAVY = "#22314A"
 ORANGE = "#FF5E19"
 BG = "#FFF7F0"
 
 st.markdown(
-    f'''<style>
+    f"""
+    <style>
     .stApp {{
         background-color: {BG};
     }}
@@ -303,7 +278,8 @@ st.markdown(
         display: inline-block;
         margin-right: 0.25rem;
     }}
-    </style>''',
+    </style>
+    """,
     unsafe_allow_html=True,
 )
 
@@ -340,7 +316,6 @@ data["Double Sided?"] = data["Sided (auto)"] == "Double Sided"
 data["Quantity"] = data["Total Annual Volume"]
 data["Total Area m²"] = data["Area m² (each)"] * data["Quantity"]
 
-# Step 1 – Double-sided overrides
 st.markdown("### 1. Double-sided check")
 
 ds_cols = [
@@ -375,7 +350,6 @@ edited_ds = st.data_editor(
 
 data["Double Sided?"] = edited_ds["Double Sided?"].fillna(False)
 
-# Step 2 – Material grouping (Option B)
 st.markdown("### 2. Material grouping (Option B)")
 
 unique_stocks = sorted(s for s in data["Stock Name"].dropna().unique() if str(s).strip())
@@ -407,11 +381,11 @@ else:
 groups_df = st.session_state["groups_df"]
 
 st.markdown(
-    '- **Initial Group** is auto-generated from thickness / GSM / SAV brand+code.  
-'
-    '- **Assigned Group** is what actually drives pricing.  
-'
-    '- Give multiple stocks the same Assigned Group to price them together.'
+    "- **Initial Group** is auto-generated from thickness / GSM / SAV brand+code.  
+"
+    "- **Assigned Group** is what actually drives pricing.  
+"
+    "- Give multiple stocks the same Assigned Group to price them together."
 )
 
 with st.expander("🔍 Search stocks & groups", expanded=False):
@@ -468,7 +442,6 @@ with merge_col1:
 stock_to_group = dict(zip(groups_df["Stock Name"], groups_df["Assigned Group"]))
 data["Material Group"] = data["Stock Name"].map(stock_to_group).fillna("Unassigned")
 
-# Step 3 – Pricing & double-sided loading
 st.sidebar.header("🎯 Pricing & Double-Sided Loading")
 
 saved_group_prices, saved_stock_prices = load_price_memory()
@@ -531,7 +504,6 @@ data["Line Value (ex GST)"] = (
     data["Total Area m²"] * data["Price per m²"] * data["Sided Multiplier"]
 )
 
-# Group preview
 st.markdown("### 3. Group preview")
 
 group_summary = (
@@ -554,7 +526,6 @@ group_summary = group_summary[
 
 st.dataframe(group_summary, use_container_width=True)
 
-# Final view & download
 st.markdown("### 4. Final calculated lines & export")
 
 data["Friendly Group Name"] = data["Material Group"].apply(friendly_group_name)
@@ -603,6 +574,6 @@ with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
 st.download_button(
     "⬇️ Download priced tender as Excel",
     data=buffer.getvalue(),
-    file_name="ads_tender_priced_v12.xlsx",
+    file_name="ads_tender_priced_v12_2.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
