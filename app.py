@@ -220,8 +220,8 @@ def friendly_group_name(group_key: str) -> str:
 # ---------------------------------------------------------
 
 
-st.set_page_config(layout="wide", page_title="BP Tender SQM Calculator v9")
-st.title("BP Tender – Square Metre Calculator (v9)")
+st.set_page_config(layout="wide", page_title="BP Tender SQM Calculator v9.1")
+st.title("BP Tender – Square Metre Calculator (v9.1)")
 st.caption("Option B grouping + search, merge groups, group preview with price & total value, double-sided control")
 
 uploaded = st.file_uploader("Upload tender Excel", type=["xlsx", "xls"])
@@ -315,11 +315,9 @@ else:
 groups_df = st.session_state["groups_df"]
 
 st.markdown(
-    "- **Initial Group** is auto-generated based on thickness, substrate, GSM, or SAV brand/code.  
-"
-    "- **Assigned Group** is what actually controls pricing.  
-"
-    "- Give multiple stocks the same Assigned Group to price them together."
+    '''- **Initial Group** is auto-generated based on thickness, substrate, GSM, or SAV brand/code.  
+- **Assigned Group** is what actually controls pricing.  
+- Give multiple stocks the same Assigned Group to price them together.'''
 )
 
 # Search bar (read-only view)
@@ -481,6 +479,6 @@ with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
 st.download_button(
     "Download priced tender as Excel",
     data=buffer.getvalue(),
-    file_name="bp_tender_priced_v9.xlsx",
+    file_name="bp_tender_priced_v9_1.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )

@@ -1,8 +1,6 @@
-# BP Tender SQM Calculator v9 (Streamlit)
+# BP Tender SQM Calculator v9.1 (Streamlit)
 
-This version adds **total value per group** into the **Group Preview** panel and Group Summary sheet.
-
-Features:
+This version fixes the string literal syntax issue and keeps all v9 features:
 
 - Option B material grouping (thickness + substrate / GSM + finish / SAV brand+code)
 - Editable group assignments with dropdown
@@ -11,8 +9,8 @@ Features:
 - Group Preview with:
   - Material Group
   - Friendly Name
-  - **Price per m²**
-  - **Group value (ex GST)**
+  - Price per m²
+  - Group value (ex GST)
   - Number of materials
   - Number of lines
   - Total area (m²)
@@ -20,7 +18,7 @@ Features:
 - Per-group price per m²
 - Excel export with:
   - `Priced Tender` sheet
-  - `Group Summary` sheet (includes price per m² and group value)
+  - `Group Summary` sheet
 
 ## Required Excel Columns
 
