@@ -1,25 +1,30 @@
-# BP Tender SQM Calculator v10 (Streamlit)
+# BP Tender SQM Calculator v11 (Streamlit, Orange UI)
 
-This version adds **persistent price memory**:
+This version adds a **clean orange theme** and keeps all the v10 functionality.
 
-- Remembers **price per Material Group** across runs.
-- Remembers **price per Stock Name** across runs.
-- Uses a local JSON file: `price_memory.json` in the app folder.
+## Visual changes
 
-## Price logic
+- Soft orange background for app and sidebar
+- Orange pill tag under the title
+- Orange rounded buttons with hover state
+- Chip-style tips above the double-sided table
+- Card-style containers around summary metrics
+- Steps clearly labelled 1–4
 
-For each line:
-
-1. If a **stock-specific price** is set (> 0), it is used.
-2. Otherwise, the **material group price** is used.
-3. Double-sided lines apply the global double-sided loading %.
-
-## Features
+## Functional features
 
 - Option B material grouping (thickness + substrate / GSM + finish / SAV brand+code)
 - Editable group assignments with dropdown
-- Search view for stocks & groups
+- Search view for stocks & groups (under an expander)
 - Merge-groups tool
+- Persistent price memory:
+  - Per Material Group
+  - Per Stock Name
+  - Stored locally in `price_memory.json`
+- Pricing logic:
+  1. If stock-specific price > 0 → use that
+  2. Else use material group price
+  3. Apply double-sided loading % if flagged
 - Group Preview with:
   - Material Group
   - Friendly Name
@@ -29,10 +34,9 @@ For each line:
   - Number of lines
   - Total area (m²)
 - Double-sided override + global loading %
-- Per-group price per m² + per-stock overrides
-- Excel export with:
-  - `Priced Tender` sheet
-  - `Group Summary` sheet
+- Excel export:
+  - `Priced Tender`
+  - `Group Summary`
 
 ## Required Excel Columns
 
@@ -51,5 +55,3 @@ pip install -r requirements.txt
 ```bash
 streamlit run app.py
 ```
-
-A file called `price_memory.json` will be created/updated in the same folder, storing your group and stock prices for future runs.
