@@ -188,6 +188,20 @@ def friendly_group_name(group_key: str) -> str:
     return g
 
 
+def fmt_money(x):
+    """Format numeric value as $#,###.## string."""
+    try:
+        x = float(x)
+    except (TypeError, ValueError):
+        return ""
+    return f"${x:,.2f}"
+
+
+# ---------------------------------------------------------
+# Price memory (persist across runs in a local JSON file)
+# ---------------------------------------------------------
+
+
 MEMORY_FILE = "price_memory.json"
 
 
@@ -218,7 +232,12 @@ def save_price_memory(group_prices, stock_prices):
         pass
 
 
-st.set_page_config(layout="wide", page_title="ADS Tender SQM Calculator v12.3", page_icon="🧮")
+# ---------------------------------------------------------
+# Streamlit app
+# ---------------------------------------------------------
+
+
+st.set_page_config(layout="wide", page_title="ADS Tender SQM Calculator v12.5", page_icon="🧮")
 
 NAVY = "#22314A"
 ORANGE = "#FF5E19"
@@ -297,7 +316,7 @@ with header_cols[0]:
 with header_cols[1]:
     st.markdown('<div class="orange-pill">ADS Tender SQM Calculator</div>', unsafe_allow_html=True)
     st.title("Pricing & Grouping Console")
-    st.caption("Option B grouping · stock & group price memory · ADS orange & navy theme")
+    st.caption("Option B grouping · per-annum & per-run SQM · ADS orange & navy theme")
 
 uploaded = st.file_uploader("Upload tender Excel", type=["xlsx", "xls"])
 if not uploaded:
@@ -314,12 +333,51 @@ if missing:
 
 data = df.copy()
 
+# Detect "runs per annum" column (Column J in your sheet, or anything with 'run' in name)
+runs_col = None
+# Prefer an exact friendly name if present
+for c in df.columns:
+    if c.strip().lower() in ["approx runs p.a", "approx runs pa", "runs per annum"]:
+        runs_col = c
+        break
+if runs_col is None:
+    run_candidates = [c for c in df.columns if "run" in c.lower()]
+    if run_candidates:
+        runs_col = run_candidates[0]
+    elif len(df.columns) > 9:
+        # Fallback: 10th column (index 9) = Column J
+        runs_col = df.columns[9]
+
+if runs_col:
+    data["Runs per Annum"] = pd.to_numeric(df[runs_col], errors="coerce")
+else:
+    data["Runs per Annum"] = np.nan
+
+# Base per-annum calculations
 data["Area m² (each)"] = data["Dimensions"].apply(parse_area_m2)
 data["Stock Name"] = data["Print/Stock Specifications"].apply(extract_stock_name)
 data["Sided (auto)"] = data["Print/Stock Specifications"].apply(detect_sides)
 data["Double Sided?"] = data["Sided (auto)"] == "Double Sided"
 data["Quantity"] = data["Total Annual Volume"]
 data["Total Area m²"] = data["Area m² (each)"] * data["Quantity"]
+
+# Sidebar option: show per-run view
+st.sidebar.header("⚙️ Options")
+use_runs = st.sidebar.checkbox(
+    "Calculate m² per run (using runs per annum column)",
+    value=False,
+    help="Uses the runs column (e.g. Column J) to show area per run and value per run.",
+)
+
+if use_runs and runs_col:
+    safe_runs = data["Runs per Annum"].replace(0, np.nan)
+    data["Area m² per Run"] = data["Total Area m²"] / safe_runs
+else:
+    data["Area m² per Run"] = np.nan
+
+# ---------------------------------------------------------
+# 1. Double-sided overrides
+# ---------------------------------------------------------
 
 st.markdown("### 1. Double-sided check")
 
@@ -331,6 +389,11 @@ ds_cols = [
     "Total Area m²",
     "Double Sided?",
 ]
+if runs_col:
+    ds_cols.append("Runs per Annum")
+    if use_runs:
+        ds_cols.append("Area m² per Run")
+
 if "Lot ID" in data.columns:
     ds_cols.insert(0, "Lot ID")
 if "Item Description" in data.columns:
@@ -354,6 +417,10 @@ edited_ds = st.data_editor(
 )
 
 data["Double Sided?"] = edited_ds["Double Sided?"].fillna(False)
+
+# ---------------------------------------------------------
+# 2. Material grouping (Option B)
+# ---------------------------------------------------------
 
 st.markdown("### 2. Material grouping (Option B)")
 
@@ -385,7 +452,6 @@ else:
 
 groups_df = st.session_state["groups_df"]
 
-# IMPORTANT: use triple-quoted string to avoid unterminated literal issues
 st.markdown(
     """
 - **Initial Group** is auto-generated from thickness / GSM / SAV brand+code.  
@@ -448,6 +514,10 @@ with merge_col1:
 stock_to_group = dict(zip(groups_df["Stock Name"], groups_df["Assigned Group"]))
 data["Material Group"] = data["Stock Name"].map(stock_to_group).fillna("Unassigned")
 
+# ---------------------------------------------------------
+# 3. Pricing & double-sided loading
+# ---------------------------------------------------------
+
 st.sidebar.header("🎯 Pricing & Double-Sided Loading")
 
 saved_group_prices, saved_stock_prices = load_price_memory()
@@ -460,7 +530,7 @@ st.sidebar.subheader("Price per m² by material group")
 for g in group_names:
     default_val = float(saved_group_prices.get(g, 0.0))
     group_prices[g] = st.sidebar.number_input(
-        g,
+        f"{g} ($/m²)",
         min_value=0.0,
         value=default_val,
         step=0.1,
@@ -476,7 +546,7 @@ with st.sidebar.expander("Show stock overrides", expanded=False):
     for s in unique_stock_names:
         default_val = float(saved_stock_prices.get(s, 0.0))
         stock_prices[s] = st.number_input(
-            s,
+            f"{s} ($/m²)",
             min_value=0.0,
             value=default_val,
             step=0.1,
@@ -510,6 +580,17 @@ data["Line Value (ex GST)"] = (
     data["Total Area m²"] * data["Price per m²"] * data["Sided Multiplier"]
 )
 
+# Value per run (if runs per annum is available)
+if runs_col:
+    safe_runs_for_value = data["Runs per Annum"].replace(0, np.nan)
+    data["Value per Run (ex GST)"] = data["Line Value (ex GST)"] / safe_runs_for_value
+else:
+    data["Value per Run (ex GST)"] = np.nan
+
+# ---------------------------------------------------------
+# 4. Group preview (with prices formatted)
+# ---------------------------------------------------------
+
 st.markdown("### 3. Group preview")
 
 group_summary = (
@@ -526,11 +607,20 @@ group_summary = (
 
 group_summary["Friendly Name"] = group_summary["Material Group"].apply(friendly_group_name)
 
-group_summary = group_summary[
-    ["Material Group", "Friendly Name", "Price_per_m2", "Materials", "Lines", "Total_Area_m2", "Group_Value_ex_GST"]
+display_group_summary = group_summary.copy()
+display_group_summary["Total_Area_m2"] = display_group_summary["Total_Area_m2"].round(2)
+display_group_summary["Price per m²"] = display_group_summary["Price_per_m2"].apply(fmt_money)
+display_group_summary["Group Value (ex GST)"] = display_group_summary["Group_Value_ex_GST"].apply(fmt_money)
+
+display_group_summary = display_group_summary[
+    ["Material Group", "Friendly Name", "Price per m²", "Materials", "Lines", "Total_Area_m2", "Group Value (ex GST)"]
 ]
 
-st.dataframe(group_summary, use_container_width=True)
+st.dataframe(display_group_summary, use_container_width=True)
+
+# ---------------------------------------------------------
+# 5. Final calculated lines & export
+# ---------------------------------------------------------
 
 st.markdown("### 4. Final calculated lines & export")
 
@@ -548,12 +638,32 @@ pricing_cols = [
     "Sided Multiplier",
     "Line Value (ex GST)",
 ]
+if runs_col:
+    pricing_cols.insert(pricing_cols.index("Total Area m²") + 1, "Runs per Annum")
+    if use_runs:
+        pricing_cols.insert(pricing_cols.index("Runs per Annum") + 1, "Area m² per Run")
+    # Always show value per run when runs exist
+    pricing_cols.insert(pricing_cols.index("Line Value (ex GST)"), "Value per Run (ex GST)")
+
 if "Lot ID" in data.columns:
     pricing_cols.insert(0, "Lot ID")
 if "Item Description" in data.columns:
     pricing_cols.insert(1, "Item Description")
 
-st.dataframe(data[pricing_cols], use_container_width=True)
+display_data = data[pricing_cols].copy()
+display_data["Total Area m²"] = display_data["Total Area m²"].round(2)
+if "Area m² per Run" in display_data.columns:
+    display_data["Area m² per Run"] = display_data["Area m² per Run"].round(2)
+display_data["Price per m²"] = display_data["Price per m²"].apply(fmt_money)
+display_data["Line Value (ex GST)"] = display_data["Line Value (ex GST)"].apply(fmt_money)
+if "Value per Run (ex GST)" in display_data.columns:
+    display_data["Value per Run (ex GST)"] = display_data["Value per Run (ex GST)"].apply(fmt_money)
+
+st.dataframe(display_data, use_container_width=True)
+
+# ---------------------------------------------------------
+# 6. KPI metrics (per annum and per run)
+# ---------------------------------------------------------
 
 total_area = data["Total Area m²"].sum(skipna=True)
 total_value = data["Line Value (ex GST)"].sum(skipna=True)
@@ -561,12 +671,30 @@ total_value = data["Line Value (ex GST)"].sum(skipna=True)
 col_a, col_b = st.columns(2)
 with col_a:
     st.markdown('<div class="metric-container">', unsafe_allow_html=True)
-    st.metric("Total Area (m²)", f"{total_area:,.2f}")
+    st.metric("Total Area (m² per annum)", f"{total_area:,.2f}")
     st.markdown("</div>", unsafe_allow_html=True)
 with col_b:
     st.markdown('<div class="metric-container">', unsafe_allow_html=True)
-    st.metric("Total Value (ex GST)", f"${total_value:,.2f}")
+    st.metric("Total Value (ex GST)", fmt_money(total_value))
     st.markdown("</div>", unsafe_allow_html=True)
+
+if use_runs and runs_col:
+    avg_area_run = data["Area m² per Run"].mean(skipna=True)
+    avg_value_run = data["Value per Run (ex GST)"].mean(skipna=True)
+
+    col_x, col_y = st.columns(2)
+    with col_x:
+        st.markdown('<div class="metric-container">', unsafe_allow_html=True)
+        st.metric("Average m² per Run", f"{avg_area_run:,.2f}")
+        st.markdown("</div>", unsafe_allow_html=True)
+    with col_y:
+        st.markdown('<div class="metric-container">', unsafe_allow_html=True)
+        st.metric("Average Value per Run (ex GST)", fmt_money(avg_value_run))
+        st.markdown("</div>", unsafe_allow_html=True)
+
+# ---------------------------------------------------------
+# 7. Save price memory & Excel export
+# ---------------------------------------------------------
 
 clean_group_prices = {k: float(v) for k, v in group_prices.items() if float(v) > 0}
 clean_stock_prices = {k: float(v) for k, v in stock_prices.items() if float(v) > 0}
@@ -580,6 +708,6 @@ with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
 st.download_button(
     "⬇️ Download priced tender as Excel",
     data=buffer.getvalue(),
-    file_name="ads_tender_priced_v12_3.xlsx",
+    file_name="ads_tender_priced_v12_5.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
