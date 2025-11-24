@@ -1,442 +1,636 @@
-
-import re
-import numpy as np
-import pandas as pd
 import streamlit as st
+import pandas as pd
+import numpy as np
+import re
+from io import BytesIO
+from openpyxl import load_workbook
+
+st.set_page_config(page_title="Tender Pricing App", layout="wide")
 
 
-# =========================================================
-# Helper: Parse dimensions → m2
-# =========================================================
-def parse_area_m2(dimensions: str):
-    if pd.isna(dimensions):
-        return np.nan
+# ---------- Helpers ----------
 
-    s = str(dimensions).lower().replace("×", "x")
-
-    # Multi-panel pattern: "2 x 2547mm x 755mm"
-    panel_pattern = r"(\d+)\s*x\s*(\d+)\s*mm\s*x\s*(\d+)\s*mm"
-    matches = list(re.finditer(panel_pattern, s))
-
-    if matches:
-        total_mm2 = 0.0
-        for m in matches:
-            qty = float(m.group(1))
-            w = float(m.group(2))
-            h = float(m.group(3))
-            total_mm2 += qty * w * h
-        return total_mm2 / 1_000_000.0
-
-    # Simple "841mm x 1189mm"
-    simple = s.replace(" ", "").replace("mm", "")
-    parts = simple.split("x")
-    if len(parts) != 2:
-        return np.nan
-    try:
-        w = float(parts[0])
-        h = float(parts[1])
-        return (w * h) / 1_000_000.0
-    except:
-        return np.nan
-
-
-# =========================================================
-# Helper: Sidedness detection
-# =========================================================
-def detect_sides_from_text(text):
-    if pd.isna(text):
-        return "Single Sided"
-
-    s = str(text).lower()
-    if "double" in s or "ds" in s:
-        return "Double Sided"
-    if "single" in s or "ss" in s:
-        return "Single Sided"
-    return "Single Sided"
-
-
-# =========================================================
-# Helper: Medium grouping
-# =========================================================
-def material_group_key(stock):
-    if not isinstance(stock, str):
-        return ""
-
-    raw = stock.strip()
-    s = raw.lower()
-
-    # Thickness grouping
-    m_thick = re.search(r"(\d+)\s*mm", s)
-    if m_thick:
-        t = m_thick.group(1)
-        if "screenboard" in s:
-            return f"{t}mm Screenboard"
-        if "corflute" in s or "coreflute" in s:
-            return f"{t}mm Corflute"
-        if "acrylic" in s:
-            return f"{t}mm Acrylic"
-        if "pvc" in s:
-            return f"{t}mm PVC"
-        if "hips" in s:
-            return f"{t}mm HIPS"
-        if "acm" in s:
-            return f"{t}mm ACM"
-
-    # GSM grouping
-    m_gsm = re.search(r"(\d{3})\s*gsm", s)
-    if m_gsm:
-        gsm = m_gsm.group(1)
-        if "silk" in s or "satin" in s:
-            return f"{gsm}gsm Silk/Satin"
-        if "matt" in s:
-            return f"{gsm}gsm Matt"
-        if "gloss" in s:
-            return f"{gsm}gsm Gloss"
-        if "synthetic" in s or "plasnet" in s:
-            return f"{gsm}gsm Synthetic"
-        return f"{gsm}gsm Paper/Card"
-
-    # SAV
-    if "sav" in s or "vinyl" in s:
-        return "SAV / Vinyl"
-
-    # Fallback
-    cleaned = re.sub(r"[^a-z0-9]+", " ", s)
-    tokens = cleaned.split()
-    if len(tokens) >= 2:
-        return " ".join(tokens[:2])
-    if tokens:
-        return tokens[0]
-    return raw
-
-
-# =========================================================
-# Helper: Excel column letters (A,B…)
-# =========================================================
-def num_to_col(n):
+def num_to_col_letters(n: int) -> str:
+    """1 -> A, 2 -> B, ... 27 -> AA, etc."""
     result = ""
     while n > 0:
-        n, r = divmod(n - 1, 26)
-        result = chr(ord("A") + r) + result
+        n, rem = divmod(n - 1, 26)
+        result = chr(65 + rem) + result
     return result
 
 
-# =========================================================
-# Helper: Money format
-# =========================================================
-def fmt_money(val):
-    try:
-        return f"${float(val):,.2f}"
-    except:
-        return ""
+def parse_dimension_to_sqm(dim_str: str) -> float:
+    """
+    Parse strings like '841mm x 1189mm', '594 x 841mm', '1.2m x 2m' to sqm.
+    Assumptions:
+    - mm, cm, m supported
+    - if no unit, assume mm
+    """
+    if pd.isna(dim_str):
+        return np.nan
+
+    s = str(dim_str).lower()
+    s = s.replace("×", "x")
+
+    # Find up to two numbers with optional units
+    matches = re.findall(r'(\d+(\.\d+)?)\s*(mm|cm|m)?', s)
+    if len(matches) < 2:
+        return np.nan
+
+    (v1, _, u1) = matches[0]
+    (v2, _, u2) = matches[1]
+
+    v1 = float(v1)
+    v2 = float(v2)
+
+    def to_m(v, u):
+        if u == "cm":
+            return v / 100.0
+        if u == "m":
+            return v
+        # default or mm
+        return v / 1000.0
+
+    w = to_m(v1, u1)
+    h = to_m(v2, u2)
+    return w * h
 
 
-# =========================================================
-# Helper: Tier pricing
-# =========================================================
-def get_tiered_rate(qty, tiers):
-    if pd.isna(qty):
-        return 0.0
-    for t in tiers:
-        lo, hi, price = t["min"], t["max"], t["price"]
-        if lo is None and qty <= hi:
-            return price
-        if hi is None and qty >= lo:
-            return price
-        if lo is not None and hi is not None and lo <= qty <= hi:
-            return price
-    return 0.0
+def detect_side(text, ds_synonyms, ss_synonyms, default="SS"):
+    """Return 'DS' or 'SS' based on synonyms found in text."""
+    if pd.isna(text):
+        return default
+
+    s = str(text).strip().lower()
+    if any(tok in s for tok in ds_synonyms):
+        return "DS"
+    if any(tok in s for tok in ss_synonyms):
+        return "SS"
+    return default
 
 
-# =========================================================
-# STREAMLIT APP
-# =========================================================
-st.set_page_config(page_title="Tender SQM Mapping Wizard v13.5", layout="wide")
-st.title("Tender SQM Mapping Wizard – v13.5 (Excel-style view)")
+def build_items_from_rows(
+    df,
+    col_letters_map,
+    size_col_letter,
+    material_col_letter,
+    qty_annum_col_letter,
+    qty_run_col_letter,
+    side_mode,
+    side_col_letter,
+    side_source_letter,
+    ds_synonyms,
+    ss_synonyms,
+    double_sided_loading_percent,
+):
+    """
+    Items are in rows (BP-style).
+    """
+    letter_to_header = col_letters_map
+    result_rows = []
+
+    size_col = letter_to_header.get(size_col_letter)
+    mat_col = letter_to_header.get(material_col_letter) if material_col_letter else None
+    qty_annum_col = (
+        letter_to_header.get(qty_annum_col_letter) if qty_annum_col_letter else None
+    )
+    qty_run_col = (
+        letter_to_header.get(qty_run_col_letter) if qty_run_col_letter else None
+    )
+
+    side_col = (
+        letter_to_header.get(side_col_letter)
+        if side_mode == "Separate column"
+        and side_col_letter
+        else None
+    )
+    side_src_col = (
+        letter_to_header.get(side_source_letter)
+        if side_mode == "Embedded in another column"
+        and side_source_letter
+        else None
+    )
+
+    ds_load_factor = 1.0 + double_sided_loading_percent / 100.0
+
+    for idx, row in df.iterrows():
+        size_val = row[size_col] if size_col else None
+        material_val = row[mat_col] if mat_col else None
+
+        qty_annum = (
+            pd.to_numeric(row[qty_annum_col], errors="coerce")
+            if qty_annum_col
+            else np.nan
+        )
+        qty_run = (
+            pd.to_numeric(row[qty_run_col], errors="coerce")
+            if qty_run_col
+            else np.nan
+        )
+
+        # Side detection
+        if side_mode == "Separate column" and side_col:
+            side_raw = row[side_col]
+        elif side_mode == "Embedded in another column" and side_src_col:
+            side_raw = row[side_src_col]
+        else:
+            side_raw = None
+
+        side = detect_side(side_raw, ds_synonyms, ss_synonyms, default="SS")
+
+        sqm_per_unit = parse_dimension_to_sqm(size_val)
+
+        sqm_per_annum = (
+            sqm_per_unit * qty_annum if (not np.isnan(sqm_per_unit) and not np.isnan(qty_annum)) else np.nan
+        )
+        sqm_per_run = (
+            sqm_per_unit * qty_run if (not np.isnan(sqm_per_unit) and not np.isnan(qty_run)) else np.nan
+        )
+
+        result_rows.append(
+            {
+                "Source Row": idx + 1,  # Excel-style row (data row)
+                "Size": size_val,
+                "Material": material_val,
+                "Qty per annum": qty_annum,
+                "Qty per run": qty_run,
+                "Side": side,
+                "SQM per unit": sqm_per_unit,
+                "SQM per annum": sqm_per_annum,
+                "SQM per run": sqm_per_run,
+            }
+        )
+
+    result_df = pd.DataFrame(result_rows)
+    return result_df
 
 
-# ---------------------------------------------------------
-# 1. Upload
-# ---------------------------------------------------------
-file = st.file_uploader("Upload Excel file", ["xlsx", "xls"])
-if not file:
-    st.stop()
+def build_items_from_columns(
+    df,
+    size_row,
+    material_row,
+    qty_annum_row,
+    qty_run_row,
+    side_mode,
+    side_row,
+    side_source_row,
+    ds_synonyms,
+    ss_synonyms,
+    double_sided_loading_percent,
+):
+    """
+    Items are in columns (Foot Locker-style).
+    size_row etc are 1-based row numbers.
+    """
+    max_row, max_col = df.shape
+    result_rows = []
 
-xls = pd.ExcelFile(file)
+    ds_load_factor = 1.0 + double_sided_loading_percent / 100.0
 
-# ---------------------------------------------------------
-# 2. Sheet selection
-# ---------------------------------------------------------
-sheet = st.selectbox("Select sheet", xls.sheet_names)
-df_raw = xls.parse(sheet)
+    # Convert to 0-based indices (if provided)
+    size_r = size_row - 1 if size_row else None
+    mat_r = material_row - 1 if material_row else None
+    qty_annum_r = qty_annum_row - 1 if qty_annum_row else None
+    qty_run_r = qty_run_row - 1 if qty_run_row else None
 
-# ---------------------------------------------------------
-# 3. Raw Preview (Excel-style)
-# ---------------------------------------------------------
-st.subheader("Raw Sheet Preview (Excel-style)")
+    side_r = side_row - 1 if (side_mode == "Separate row" and side_row) else None
+    side_src_r = (
+        side_source_row - 1
+        if (side_mode == "Embedded in another row" and side_source_row)
+        else None
+    )
 
-raw = df_raw.copy()
-raw.index = range(1, len(raw) + 1)
-raw.columns = [num_to_col(i + 1) for i in range(len(raw.columns))]
+    for col_idx in range(max_col):
+        col_letter = num_to_col_letters(col_idx + 1)
 
-with st.expander("Raw sheet view options", expanded=True):
-    rs = st.number_input("Start row", 1, len(raw), 1)
-    re_ = st.number_input("End row", rs, len(raw), min(len(raw), rs + 50))
-    show_cols = st.multiselect("Columns to display", list(raw.columns), list(raw.columns))
+        size_val = df.iloc[size_r, col_idx] if size_r is not None else None
+        material_val = df.iloc[mat_r, col_idx] if mat_r is not None else None
 
-st.dataframe(raw.loc[rs:re_, show_cols], use_container_width=True)
+        qty_annum = (
+            pd.to_numeric(df.iloc[qty_annum_r, col_idx], errors="coerce")
+            if qty_annum_r is not None
+            else np.nan
+        )
+        qty_run = (
+            pd.to_numeric(df.iloc[qty_run_r, col_idx], errors="coerce")
+            if qty_run_r is not None
+            else np.nan
+        )
 
-# ---------------------------------------------------------
-# 4. Auto-detect orientation
-# ---------------------------------------------------------
-r, c = df_raw.shape
-auto = "Row Based" if r >= 2 * c else "Column Based"
+        # Skip totally empty items
+        if (
+            pd.isna(size_val)
+            and pd.isna(material_val)
+            and np.isnan(qty_annum)
+            and np.isnan(qty_run)
+        ):
+            continue
 
-layout = st.radio(
-    "Is each item a row or a column?",
-    ["Row Based", "Column Based"],
-    index=0 if auto == "Row Based" else 1,
-)
+        # Side detection
+        if side_mode == "Separate row" and side_r is not None:
+            side_raw = df.iloc[side_r, col_idx]
+        elif side_mode == "Embedded in another row" and side_src_r is not None:
+            side_raw = df.iloc[side_src_r, col_idx]
+        else:
+            side_raw = None
 
-df = df_raw.copy() if layout == "Row Based" else df_raw.T.copy()
+        side = detect_side(side_raw, ds_synonyms, ss_synonyms, default="SS")
 
-# ---------------------------------------------------------
-# 5. Normalised preview
-# ---------------------------------------------------------
-st.subheader("Normalised Preview (Excel-style)")
+        sqm_per_unit = parse_dimension_to_sqm(size_val)
 
-norm = df.copy()
-norm.index = range(1, len(norm) + 1)
-norm_letters = [num_to_col(i + 1) for i in range(len(norm.columns))]
-norm.columns = norm_letters
+        sqm_per_annum = (
+            sqm_per_unit * qty_annum if (not np.isnan(sqm_per_unit) and not np.isnan(qty_annum)) else np.nan
+        )
+        sqm_per_run = (
+            sqm_per_unit * qty_run if (not np.isnan(sqm_per_unit) and not np.isnan(qty_run)) else np.nan
+        )
 
-with st.expander("Normalised view options", expanded=True):
-    ns = st.number_input("Normalised start row", 1, len(norm), 1, key="ns")
-    ne = st.number_input("Normalised end row", ns, len(norm), min(len(norm), ns + 50), key="ne")
-    ncols = st.multiselect("Normalised columns to display", list(norm.columns), list(norm.columns), key="ncols")
+        result_rows.append(
+            {
+                "Source Column": col_letter,
+                "Size": size_val,
+                "Material": material_val,
+                "Qty per annum": qty_annum,
+                "Qty per run": qty_run,
+                "Side": side,
+                "SQM per unit": sqm_per_unit,
+                "SQM per annum": sqm_per_annum,
+                "SQM per run": sqm_per_run,
+            }
+        )
 
-st.dataframe(norm.loc[ns:ne, ncols], use_container_width=True)
+    result_df = pd.DataFrame(result_rows)
+    return result_df
 
-# ---------------------------------------------------------
-# 6. Mapping
-# ---------------------------------------------------------
-st.subheader("Column Mapping")
 
-df_cols = list(df.columns)
-excel_to_real = dict(zip(norm_letters, df_cols))
-labelled = [f"{ltr} – {col}" for ltr, col in zip(norm_letters, df_cols)]
+# ---------- UI ----------
 
-def pick(col_label):
-    letter = col_label.split("–")[0].strip()
-    return excel_to_real.get(letter)
-
-c1, c2 = st.columns(2)
-with c1:
-    mcol = st.selectbox("Material column", labelled)
-    scol = st.selectbox("Size column", labelled)
-    qcol = st.selectbox("Quantity column", labelled)
-with c2:
-    side_col = st.selectbox("Side column (optional)", ["<none>"] + labelled)
-    run_col = st.selectbox("Runs per annum (optional)", ["<none>"] + labelled)
-    perrun_col = st.selectbox("Per-run Qty (optional)", ["<none>"] + labelled)
-
-c3, c4 = st.columns(2)
-with c3:
-    lot_col = st.selectbox("Lot ID (optional)", ["<none>"] + labelled)
-with c4:
-    desc_col = st.selectbox("Description (optional)", ["<none>"] + labelled)
-
-if not st.button("Apply Mapping"):
-    st.stop()
-
-material = pick(mcol)
-size = pick(scol)
-qty = pick(qcol)
-side = pick(side_col) if side_col != "<none>" else None
-runs = pick(run_col) if run_col != "<none>" else None
-per_run = pick(perrun_col) if perrun_col != "<none>" else None
-lot = pick(lot_col) if lot_col != "<none>" else None
-desc = pick(desc_col) if desc_col != "<none>" else None
-
-# ---------------------------------------------------------
-# 7. Build cleaned dataset
-# ---------------------------------------------------------
-data = pd.DataFrame()
-data["Material"] = df[material]
-data["Size"] = df[size]
-data["Qty"] = pd.to_numeric(df[qty], errors="coerce")
-
-if lot:
-    data["Lot"] = df[lot]
-if desc:
-    data["Description"] = df[desc]
-
-if runs:
-    data["Runs"] = pd.to_numeric(df[runs], errors="coerce")
-else:
-    data["Runs"] = np.nan
-
-if per_run:
-    data["Qty per Run"] = pd.to_numeric(df[per_run], errors="coerce")
-else:
-    data["Qty per Run"] = np.nan
-
-if side:
-    data["Side (auto)"] = df[side].apply(detect_sides_from_text)
-else:
-    data["Side (auto)"] = data["Material"].apply(detect_sides_from_text)
-
-data["DoubleSided"] = data["Side (auto)"].eq("Double Sided")
-
-data["Area_each"] = data["Size"].apply(parse_area_m2)
-data["Area_total"] = data["Area_each"] * data["Qty"]
-
-if runs:
-    safe_runs = data["Runs"].replace(0, np.nan)
-    data["Area_per_Run"] = data["Area_total"] / safe_runs
-else:
-    data["Area_per_Run"] = np.nan
-
-# ---------------------------------------------------------
-# 8. Grouping
-# ---------------------------------------------------------
-st.subheader("Material Grouping")
-
-materials = sorted(set(data["Material"].dropna()))
-
-if "groups" not in st.session_state:
-    st.session_state.groups = pd.DataFrame({
-        "Material": materials,
-        "InitialGroup": [material_group_key(s) for s in materials]
-    })
-    st.session_state.groups["Group"] = st.session_state.groups["InitialGroup"]
-
-else:
-    g = st.session_state.groups
-    existing = set(g["Material"])
-    new_items = [m for m in materials if m not in existing]
-    if new_items:
-        new_df = pd.DataFrame({
-            "Material": new_items,
-            "InitialGroup": [material_group_key(s) for s in new_items]
-        })
-        new_df["Group"] = new_df["InitialGroup"]
-        g = pd.concat([g, new_df], ignore_index=True)
-    g = g[g["Material"].isin(materials)].reset_index(drop=True)
-    st.session_state.groups = g
-
-groups = st.session_state.groups
+st.title("Tender Pricing App (Steps 1–3)")
 
 st.markdown(
-    "- **InitialGroup** is auto-derived from text\n"
-    "- **Group** controls pricing\n"
-    "- Edit **Group** to merge/split materials"
+    """
+**Step 1:** Upload Excel and view all rows/columns  
+**Step 2:** Hide/Unhide rows & columns (without deleting)  
+**Step 3:** Map fields (Size, Material, Qty, DS/SS) and calculate SQM + Prices
+"""
 )
 
-groups = st.data_editor(
-    groups,
-    num_rows="fixed",
-    use_container_width=True,
-    column_config={
-        "Material": st.column_config.TextColumn(disabled=True),
-        "InitialGroup": st.column_config.TextColumn(disabled=True)
-    },
-    key="group_editor"
+uploaded_file = st.file_uploader(
+    "Upload Excel file", type=["xlsx", "xls"], accept_multiple_files=False
 )
 
-mapping = dict(zip(groups["Material"], groups["Group"]))
-data["Group"] = data["Material"].map(mapping)
+if uploaded_file is None:
+    st.info("Please upload an Excel file to begin.")
+    st.stop()
 
-# ---------------------------------------------------------
-# 9. Edit Double-Sided
-# ---------------------------------------------------------
-st.subheader("Double-Sided Overrides")
+# Read file bytes once for reuse
+file_bytes = uploaded_file.read()
 
-edit_cols = ["Material", "Size", "Qty", "Group", "DoubleSided"]
-if "Lot" in data.columns:
-    edit_cols.insert(0, "Lot")
-if "Description" in data.columns:
-    edit_cols.insert(1, "Description")
+# --- Load sheet list ---
+excel_file = pd.ExcelFile(BytesIO(file_bytes))
+sheet_name = st.selectbox("Select sheet", options=excel_file.sheet_names)
 
-edited = st.data_editor(
-    data[edit_cols],
-    use_container_width=True,
-    column_config={"DoubleSided": st.column_config.CheckboxColumn()},
-    key="ds_editor"
+# --- Read selected sheet into DataFrame ---
+df = pd.read_excel(BytesIO(file_bytes), sheet_name=sheet_name)
+
+# --- Build Excel-style column letter mapping ---
+col_letters = {
+    num_to_col_letters(i + 1): col_name for i, col_name in enumerate(df.columns)
+}
+
+with st.expander("Show column mapping (Excel letters → headers)"):
+    mapping_df = pd.DataFrame(
+        {
+            "Excel Column": list(col_letters.keys()),
+            "Header": [str(v) for v in col_letters.values()],
+        }
+    )
+    st.table(mapping_df)
+
+# ======================================================
+# STEP 2: HIDE / UNHIDE COLUMNS & ROWS (for preview + export)
+# ======================================================
+
+st.header("Step 2 – Hide / Unhide Rows & Columns")
+
+# Columns to hide
+cols_to_hide_letters = st.multiselect(
+    "Select columns to HIDE (by Excel letter):",
+    options=list(col_letters.keys()),
+    default=[],
+)
+cols_to_hide_headers = [col_letters[letter] for letter in cols_to_hide_letters]
+
+# Rows to hide (1-based rows in DataFrame)
+max_row = len(df)
+row_numbers = list(range(1, max_row + 1))
+rows_to_hide_display = st.multiselect(
+    "Select rows to HIDE (by row number in this table):",
+    options=row_numbers,
+    default=[],
 )
 
-data["DoubleSided"] = edited["DoubleSided"]
+# Preview with hidden rows/cols
+preview_df = df.copy()
+if cols_to_hide_headers:
+    preview_df = preview_df.drop(columns=cols_to_hide_headers)
+if rows_to_hide_display:
+    indices_to_drop = [r - 1 for r in rows_to_hide_display]
+    preview_df = preview_df.drop(index=indices_to_drop)
 
-# ---------------------------------------------------------
-# 10. Pricing
-# ---------------------------------------------------------
-st.subheader("Pricing")
+st.subheader(f"Preview: {sheet_name}")
+st.caption(
+    "Preview hides selected rows/columns. Original workbook remains intact; "
+    "exported file will mark them as hidden in Excel."
+)
+st.dataframe(preview_df)
 
-st.sidebar.header("Pricing Controls")
-ds_pct = st.sidebar.number_input("Double-sided loading %", 0.0, 200.0, 25.0)
+# Export with hidden rows/columns
+st.subheader("Export with Hidden Rows / Columns")
+if st.button("Prepare file with hidden rows/columns"):
+    wb = load_workbook(BytesIO(file_bytes))
+    ws = wb[sheet_name]
 
-t1_max = st.sidebar.number_input("Tier1 max Qty", 1, 999999, 100)
-t1_price = st.sidebar.number_input("Tier1 price per m²", 0.0, 999.0, 10.0)
+    # Hide selected columns
+    for letter in cols_to_hide_letters:
+        ws.column_dimensions[letter].hidden = True
 
-t2_max = st.sidebar.number_input("Tier2 max Qty", t1_max, 999999, 1000)
-t2_price = st.sidebar.number_input("Tier2 price per m²", 0.0, 999.0, 8.0)
+    # Hide selected rows (data rows: +1 because header is row 1)
+    for r in rows_to_hide_display:
+        excel_row = r + 1
+        ws.row_dimensions[excel_row].hidden = True
 
-t3_price = st.sidebar.number_input("Tier3 price per m²", 0.0, 999.0, 6.0)
+    out_buf = BytesIO()
+    wb.save(out_buf)
+    out_buf.seek(0)
 
-tiers = [
-    {"min": None, "max": t1_max, "price": t1_price},
-    {"min": t1_max + 1, "max": t2_max, "price": t2_price},
-    {"min": t2_max + 1, "max": None, "price": t3_price},
-]
+    st.download_button(
+        "Download workbook (with hidden rows/columns)",
+        data=out_buf,
+        file_name=f"{sheet_name}_hidden.xlsx",
+        mime=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+    )
 
-data["Rate"] = data["Qty"].apply(lambda x: get_tiered_rate(x, tiers))
-mult = 1 + ds_pct / 100
-data["Multiplier"] = np.where(data["DoubleSided"], mult, 1.0)
+# ======================================================
+# STEP 3: SQM & PRICE CALCULATION
+# ======================================================
 
-data["Value"] = data["Area_total"] * data["Rate"] * data["Multiplier"]
+st.header("Step 3 – SQM & Price Calculation")
 
-if "Runs" in data.columns:
-    safe_runs = data["Runs"].replace(0, np.nan)
-    data["Value_per_Run"] = data["Value"] / safe_runs
-else:
-    data["Value_per_Run"] = np.nan
+st.markdown(
+    """
+Here you tell the app **where** the data lives (columns vs rows) and how DS/SS is encoded,
+so it can calculate **square meters** and **pricing by material**.
+"""
+)
 
-# ---------------------------------------------------------
-# 11. Final preview
-# ---------------------------------------------------------
-st.subheader("Final Output")
+layout_type = st.radio(
+    "How are items laid out in this sheet?",
+    ["Items are in rows (BP-style)", "Items are in columns (Foot Locker-style)"],
+)
 
-out_cols = [
-    "Material",
-    "Size",
-    "Qty",
-    "Group",
-    "DoubleSided",
-    "Area_each",
-    "Area_total",
-    "Rate",
-    "Multiplier",
-    "Value"
-]
+# DS/SS synonyms + loading
+st.subheader("Double-sided / Single-sided configuration")
 
-if "Runs" in data.columns:
-    out_cols.insert(5, "Runs")
-    out_cols.insert(6, "Area_per_Run")
-    out_cols.append("Value_per_Run")
+ds_syn_input = st.text_input(
+    "Values meaning DOUBLE-SIDED (comma-separated)",
+    value="ds,double sided,double-sided,2s,2 sided,2sided,double",
+)
+ss_syn_input = st.text_input(
+    "Values meaning SINGLE-SIDED (comma-separated)",
+    value="ss,single sided,single-sided,1s,1 sided,1sided,single",
+)
 
-if "Lot" in data.columns:
-    out_cols.insert(0, "Lot")
-if "Description" in data.columns:
-    out_cols.insert(1, "Description")
+ds_synonyms = [s.strip().lower() for s in ds_syn_input.split(",") if s.strip()]
+ss_synonyms = [s.strip().lower() for s in ss_syn_input.split(",") if s.strip()]
 
-out = data[out_cols].copy()
-out["Rate"] = out["Rate"].apply(fmt_money)
-out["Value"] = out["Value"].apply(fmt_money)
-if "Value_per_Run" in out.columns:
-    out["Value_per_Run"] = out["Value_per_Run"].apply(fmt_money)
+double_sided_loading_percent = st.number_input(
+    "Double-sided loading % (e.g. 25 for 25% extra over single-sided)",
+    min_value=0.0,
+    max_value=500.0,
+    value=25.0,
+    step=1.0,
+)
 
-st.dataframe(out, use_container_width=True)
+calc_df = None  # will hold result if we calculate
 
-# Totals
-st.metric("Total m² per annum", f"{data['Area_total'].sum():,.2f}")
-st.metric("Total Value (ex GST)", fmt_money(data["Value"].sum()))
+if layout_type == "Items are in rows (BP-style)":
+    st.subheader("Mapping (items in rows)")
+
+    letters = list(col_letters.keys())
+
+    # Try to auto-guess some defaults by header name
+    headers_lower = {ltr: str(h).lower() for ltr, h in col_letters.items()}
+
+    def guess_letter(substrings, fallback):
+        for ltr, h in headers_lower.items():
+            if any(sub in h for sub in substrings):
+                return ltr
+        return fallback
+
+    size_default = guess_letter(["dim", "size"], letters[0] if letters else None)
+    material_default = guess_letter(
+        ["material", "stock", "substrate"], letters[0] if letters else None
+    )
+    qty_annum_default = guess_letter(
+        ["annual", "per annum", "pa"], letters[0] if letters else None
+    )
+    qty_run_default = guess_letter(
+        ["per run", "run qty", "run quantity"], letters[0] if letters else None
+    )
+
+    size_col_letter = st.selectbox(
+        "Size / Dimensions column (Excel letter)", options=letters, index=letters.index(size_default) if size_default in letters else 0
+    )
+    material_col_letter = st.selectbox(
+        "Material name column (Excel letter)",
+        options=["(none)"] + letters,
+        index=(letters.index(material_default) + 1) if material_default in letters else 0,
+    )
+    qty_annum_col_letter = st.selectbox(
+        "Quantity PER ANNUM column (Excel letter)",
+        options=["(none)"] + letters,
+        index=(letters.index(qty_annum_default) + 1) if qty_annum_default in letters else 0,
+    )
+    qty_run_col_letter = st.selectbox(
+        "Quantity PER RUN column (Excel letter)",
+        options=["(none)"] + letters,
+        index=(letters.index(qty_run_default) + 1) if qty_run_default in letters else 0,
+    )
+
+    # Convert "(none)" to None
+    material_col_letter = None if material_col_letter == "(none)" else material_col_letter
+    qty_annum_col_letter = None if qty_annum_col_letter == "(none)" else qty_annum_col_letter
+    qty_run_col_letter = None if qty_run_col_letter == "(none)" else qty_run_col_letter
+
+    st.markdown("**Where is Single / Double-sided information?**")
+    side_mode = st.selectbox(
+        "Choose how DS/SS is stored:",
+        ["Separate column", "Embedded in another column", "Not available (assume SS)"],
+    )
+
+    side_col_letter = None
+    side_source_letter = None
+
+    if side_mode == "Separate column":
+        side_col_letter = st.selectbox(
+            "Column that contains DS/SS values",
+            options=letters,
+        )
+    elif side_mode == "Embedded in another column":
+        side_source_letter = st.selectbox(
+            "Column where DS/SS text appears (e.g. Size or Description)",
+            options=letters,
+            index=letters.index(size_col_letter) if size_col_letter in letters else 0,
+        )
+
+    if st.button("Calculate SQM & build item table", key="calc_rows"):
+        calc_df = build_items_from_rows(
+            df=df,
+            col_letters_map=col_letters,
+            size_col_letter=size_col_letter,
+            material_col_letter=material_col_letter,
+            qty_annum_col_letter=qty_annum_col_letter,
+            qty_run_col_letter=qty_run_col_letter,
+            side_mode=side_mode,
+            side_col_letter=side_col_letter,
+            side_source_letter=side_source_letter,
+            ds_synonyms=ds_synonyms,
+            ss_synonyms=ss_synonyms,
+            double_sided_loading_percent=double_sided_loading_percent,
+        )
+
+elif layout_type == "Items are in columns (Foot Locker-style)":
+    st.subheader("Mapping (items in columns)")
+
+    max_row, max_col = df.shape
+    row_options = list(range(1, max_row + 1))
+
+    size_row = st.selectbox(
+        "Row number that contains Size / Dimensions (across columns)",
+        options=row_options,
+        index=0,
+    )
+    material_row = st.selectbox(
+        "Row number that contains Material name (across columns)",
+        options=["(none)"] + row_options,
+        index=0,
+    )
+    qty_annum_row = st.selectbox(
+        "Row number that contains Quantity PER ANNUM (across columns)",
+        options=["(none)"] + row_options,
+        index=0,
+    )
+    qty_run_row = st.selectbox(
+        "Row number that contains Quantity PER RUN (across columns)",
+        options=["(none)"] + row_options,
+        index=0,
+    )
+
+    # Convert "(none)" to None
+    material_row = None if material_row == "(none)" else material_row
+    qty_annum_row = None if qty_annum_row == "(none)" else qty_annum_row
+    qty_run_row = None if qty_run_row == "(none)" else qty_run_row
+
+    st.markdown("**Where is Single / Double-sided information?**")
+    side_mode = st.selectbox(
+        "Choose how DS/SS is stored:",
+        ["Separate row", "Embedded in another row", "Not available (assume SS)"],
+    )
+
+    side_row = None
+    side_source_row = None
+
+    if side_mode == "Separate row":
+        side_row = st.selectbox(
+            "Row that contains DS/SS values (across columns)",
+            options=row_options,
+        )
+    elif side_mode == "Embedded in another row":
+        side_source_row = st.selectbox(
+            "Row where DS/SS text appears (e.g. in Size or Description row)",
+            options=row_options,
+            index=row_options.index(size_row) if size_row in row_options else 0,
+        )
+
+    if st.button("Calculate SQM & build item table", key="calc_cols"):
+        calc_df = build_items_from_columns(
+            df=df,
+            size_row=size_row,
+            material_row=material_row,
+            qty_annum_row=qty_annum_row,
+            qty_run_row=qty_run_row,
+            side_mode=side_mode,
+            side_row=side_row,
+            side_source_row=side_source_row,
+            ds_synonyms=ds_synonyms,
+            ss_synonyms=ss_synonyms,
+            double_sided_loading_percent=double_sided_loading_percent,
+        )
+
+# ---------- Show calculation results + Material price mapping ----------
+
+if calc_df is not None:
+    st.subheader("Calculated SQM table (before pricing)")
+    st.dataframe(calc_df)
+
+    st.subheader("Material Pricing (per sqm)")
+
+    # Build unique material list for pricing
+    materials = sorted(
+        {m for m in calc_df["Material"].dropna().unique()} if "Material" in calc_df.columns else []
+    )
+    price_df = pd.DataFrame(
+        {"Material": materials, "Price per SQM": [np.nan] * len(materials)}
+    )
+
+    edited_price_df = st.data_editor(
+        price_df,
+        num_rows="dynamic",
+        key="material_price_editor",
+        use_container_width=True,
+    )
+
+    # Merge prices back
+    calc_with_price = calc_df.merge(
+        edited_price_df, how="left", on="Material"
+    )
+
+    # Apply DS loading
+    ds_factor = 1.0 + double_sided_loading_percent / 100.0
+    calc_with_price["Effective Price per SQM"] = calc_with_price.apply(
+        lambda r: r["Price per SQM"] * ds_factor if r.get("Side") == "DS" else r["Price per SQM"],
+        axis=1,
+    )
+
+    # Price calculations
+    calc_with_price["Price per unit"] = (
+        calc_with_price["SQM per unit"] * calc_with_price["Effective Price per SQM"]
+    )
+    calc_with_price["Price per annum"] = (
+        calc_with_price["SQM per annum"] * calc_with_price["Effective Price per SQM"]
+    )
+    calc_with_price["Price per run"] = (
+        calc_with_price["SQM per run"] * calc_with_price["Effective Price per SQM"]
+    )
+
+    st.subheader("Final calculation table (including pricing)")
+    st.dataframe(calc_with_price)
+
+    # Download calculated table
+    out_calc = BytesIO()
+    calc_with_price.to_excel(out_calc, index=False, sheet_name="CALC")
+    out_calc.seek(0)
+
+    st.download_button(
+        "Download SQM & pricing table (CALC.xlsx)",
+        data=out_calc,
+        file_name="sqm_pricing_calc.xlsx",
+        mime=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+    )
