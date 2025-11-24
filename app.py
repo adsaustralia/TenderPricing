@@ -319,7 +319,6 @@ if "group_assignments" not in st.session_state:
         st.session_state["group_assignments"] = preset.get("group_assignments", {})
         st.session_state["group_prices"] = preset.get("group_prices", {})
         st.session_state["material_overrides"] = preset.get("material_overrides", {})
-        st.info("Loaded default material group preset from repo (material_groups_default.json).")
     except Exception:
         st.session_state["group_assignments"] = {}
         st.session_state["group_prices"] = {}
@@ -333,8 +332,9 @@ if uploaded_file is None:
     st.info("Please upload an Excel file to begin.")
     st.stop()
 
-# Read file bytes once for reuse
-file_bytes = uploaded_file.read()
+# IMPORTANT FIX: use getvalue() instead of read() so the file content
+# is available on every rerun and typing in data_editor doesn't wipe out the data.
+file_bytes = uploaded_file.getvalue()
 
 # --- Load sheet list ---
 excel_file = pd.ExcelFile(BytesIO(file_bytes))
