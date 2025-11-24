@@ -111,8 +111,6 @@ def build_items_from_rows(
         else None
     )
 
-    ds_load_factor = 1.0 + double_sided_loading_percent / 100.0
-
     for idx, row in df.iterrows():
         size_val = row[size_col] if size_col else None
         material_val = row[mat_col] if mat_col else None
@@ -184,8 +182,6 @@ def build_items_from_columns(
     """
     max_row, max_col = df.shape
     result_rows = []
-
-    ds_load_factor = 1.0 + double_sided_loading_percent / 100.0
 
     # Convert to 0-based indices (if provided)
     size_r = size_row - 1 if size_row else None
@@ -293,19 +289,40 @@ sheet_name = st.selectbox("Select sheet", options=excel_file.sheet_names)
 # --- Read selected sheet into DataFrame ---
 df = pd.read_excel(BytesIO(file_bytes), sheet_name=sheet_name)
 
-# --- Build Excel-style column letter mapping ---
-col_letters = {
-    num_to_col_letters(i + 1): col_name for i, col_name in enumerate(df.columns)
-}
+# Show the sheet exactly like Excel (headers only, no extra mapping table)
+st.subheader(f"Sheet preview: {sheet_name}")
+st.dataframe(df)
 
-with st.expander("Show column mapping (Excel letters → headers)"):
-    mapping_df = pd.DataFrame(
-        {
-            "Excel Column": list(col_letters.keys()),
-            "Header": [str(v) for v in col_letters.values()],
-        }
-    )
-    st.table(mapping_df)
+# --- Build Excel-style column letter mapping (internal) ---
+# And also build friendly labels like "A - Lot ID"
+col_letters = {}
+col_labels = {}
+for i, col_name in enumerate(df.columns):
+    letter = num_to_col_letters(i + 1)
+    col_letters[letter] = col_name
+    label = f"{letter} - {col_name}"
+    col_labels[letter] = label
+
+# Helper to show dropdowns with friendly labels but keep track of the letter
+def select_letter(label, options_letters, default_letter=None, key=None, allow_none=False, none_label="(none)"):
+    options = []
+    mapping = {}
+    if allow_none:
+        options.append(none_label)
+        mapping[none_label] = None
+    for ltr in options_letters:
+        lab = col_labels[ltr]
+        options.append(lab)
+        mapping[lab] = ltr
+
+    if default_letter is not None and default_letter in options_letters:
+        default_label = col_labels[default_letter]
+        default_index = options.index(default_label)
+    else:
+        default_index = 0
+
+    choice = st.selectbox(label, options=options, index=default_index, key=key)
+    return mapping[choice]
 
 # ======================================================
 # STEP 2: HIDE / UNHIDE COLUMNS & ROWS (for preview + export)
@@ -313,12 +330,16 @@ with st.expander("Show column mapping (Excel letters → headers)"):
 
 st.header("Step 2 – Hide / Unhide Rows & Columns")
 
+all_letters = list(col_letters.keys())
+
 # Columns to hide
-cols_to_hide_letters = st.multiselect(
+cols_to_hide_labels = st.multiselect(
     "Select columns to HIDE (by Excel letter):",
-    options=list(col_letters.keys()),
+    options=[col_labels[ltr] for ltr in all_letters],
     default=[],
 )
+# Convert back to letters
+cols_to_hide_letters = [opt.split(" - ")[0] for opt in cols_to_hide_labels]
 cols_to_hide_headers = [col_letters[letter] for letter in cols_to_hide_letters]
 
 # Rows to hide (1-based rows in DataFrame)
@@ -338,7 +359,7 @@ if rows_to_hide_display:
     indices_to_drop = [r - 1 for r in rows_to_hide_display]
     preview_df = preview_df.drop(index=indices_to_drop)
 
-st.subheader(f"Preview: {sheet_name}")
+st.subheader(f"Preview with hidden rows/columns: {sheet_name}")
 st.caption(
     "Preview hides selected rows/columns. Original workbook remains intact; "
     "exported file will mark them as hidden in Excel."
@@ -442,29 +463,33 @@ if layout_type == "Items are in rows (BP-style)":
         ["per run", "run qty", "run quantity"], letters[0] if letters else None
     )
 
-    size_col_letter = st.selectbox(
-        "Size / Dimensions column (Excel letter)", options=letters, index=letters.index(size_default) if size_default in letters else 0
+    size_col_letter = select_letter(
+        "Size / Dimensions column",
+        options_letters=letters,
+        default_letter=size_default,
+        key="size_col_letter_rows"
     )
-    material_col_letter = st.selectbox(
-        "Material name column (Excel letter)",
-        options=["(none)"] + letters,
-        index=(letters.index(material_default) + 1) if material_default in letters else 0,
+    material_col_letter = select_letter(
+        "Material name column",
+        options_letters=letters,
+        default_letter=material_default,
+        key="material_col_letter_rows",
+        allow_none=True,
     )
-    qty_annum_col_letter = st.selectbox(
-        "Quantity PER ANNUM column (Excel letter)",
-        options=["(none)"] + letters,
-        index=(letters.index(qty_annum_default) + 1) if qty_annum_default in letters else 0,
+    qty_annum_col_letter = select_letter(
+        "Quantity PER ANNUM column",
+        options_letters=letters,
+        default_letter=qty_annum_default,
+        key="qty_annum_col_letter_rows",
+        allow_none=True,
     )
-    qty_run_col_letter = st.selectbox(
-        "Quantity PER RUN column (Excel letter)",
-        options=["(none)"] + letters,
-        index=(letters.index(qty_run_default) + 1) if qty_run_default in letters else 0,
+    qty_run_col_letter = select_letter(
+        "Quantity PER RUN column",
+        options_letters=letters,
+        default_letter=qty_run_default,
+        key="qty_run_col_letter_rows",
+        allow_none=True,
     )
-
-    # Convert "(none)" to None
-    material_col_letter = None if material_col_letter == "(none)" else material_col_letter
-    qty_annum_col_letter = None if qty_annum_col_letter == "(none)" else qty_annum_col_letter
-    qty_run_col_letter = None if qty_run_col_letter == "(none)" else qty_run_col_letter
 
     st.markdown("**Where is Single / Double-sided information?**")
     side_mode = st.selectbox(
@@ -476,15 +501,17 @@ if layout_type == "Items are in rows (BP-style)":
     side_source_letter = None
 
     if side_mode == "Separate column":
-        side_col_letter = st.selectbox(
+        side_col_letter = select_letter(
             "Column that contains DS/SS values",
-            options=letters,
+            options_letters=letters,
+            key="side_col_letter_rows"
         )
     elif side_mode == "Embedded in another column":
-        side_source_letter = st.selectbox(
+        side_source_letter = select_letter(
             "Column where DS/SS text appears (e.g. Size or Description)",
-            options=letters,
-            index=letters.index(size_col_letter) if size_col_letter in letters else 0,
+            options_letters=letters,
+            default_letter=size_col_letter,
+            key="side_source_letter_rows"
         )
 
     if st.button("Calculate SQM & build item table", key="calc_rows"):
