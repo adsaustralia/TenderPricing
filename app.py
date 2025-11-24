@@ -2,11 +2,11 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import re
+import json
 from io import BytesIO
 from openpyxl import load_workbook
 
 st.set_page_config(page_title="Tender Pricing App", layout="wide")
-
 
 # ---------- Helpers ----------
 
@@ -301,15 +301,29 @@ def build_items_from_columns(
 
 # ---------- UI ----------
 
-st.title("Tender Pricing App (Steps 1–3)")
+st.title("Tender Pricing App (Excel-style, Grouped Pricing)")
 
 st.markdown(
     """
 **Step 1:** Upload Excel and view all rows/columns (Excel-style A,B,C + 1,2,3)  
 **Step 2:** Hide/Unhide rows & columns (without deleting)  
-**Step 3:** Map fields (Size, Material, Qty, DS/SS) and calculate SQM + Prices
+**Step 3:** Map fields (Size, Material, Qty, DS/SS) and calculate SQM + **Grouped Prices**
 """
 )
+
+# ---------- Load default preset at startup (from repo) ----------
+if "group_assignments" not in st.session_state:
+    try:
+        with open("material_groups_default.json", "r", encoding="utf-8") as f:
+            preset = json.load(f)
+        st.session_state["group_assignments"] = preset.get("group_assignments", {})
+        st.session_state["group_prices"] = preset.get("group_prices", {})
+        st.session_state["material_overrides"] = preset.get("material_overrides", {})
+        st.info("Loaded default material group preset from repo (material_groups_default.json).")
+    except Exception:
+        st.session_state["group_assignments"] = {}
+        st.session_state["group_prices"] = {}
+        st.session_state["material_overrides"] = {}
 
 uploaded_file = st.file_uploader(
     "Upload Excel file", type=["xlsx", "xls"], accept_multiple_files=False
@@ -446,6 +460,12 @@ so it can calculate **square meters** and **pricing by material**.
 In this setup, **Qty per run** can either come from:
 - An explicit "Qty per run" column/row, OR
 - `Qty per annum ÷ Runs per annum`.
+
+In the **Material Pricing** area you can:
+- Assign each material to a **Group name** (e.g. "3mm ACM", "Posters", "Window Vinyl").  
+- Enter one **Group Price per SQM** to apply to all materials in that group.  
+- Optionally override a single material with its own price.  
+- Save/Load **group presets** so you can reuse them next campaign/tender.
 """
 )
 
@@ -670,7 +690,7 @@ elif layout_type == "Items are in columns (Foot Locker-style)":
             double_sided_loading_percent=double_sided_loading_percent,
         )
 
-# ---------- Show calculation results + Material price mapping ----------
+# ---------- Show calculation results + Material group pricing ----------
 
 if calc_df is not None:
     st.subheader("Calculated SQM table (before pricing, numeric)")
@@ -680,35 +700,193 @@ if calc_df is not None:
             calc_df[col] = calc_df[col].round(2)
     st.dataframe(calc_df)
 
-    st.subheader("Material Pricing (per sqm, AUD)")
+    # ---------- Material groups + pricing presets ----------
+    st.subheader("Material Groups & Pricing Presets")
 
-    # Build unique material list for pricing
+    # Load saved preset (optional override of default)
+    preset_file = st.file_uploader(
+        "Load saved material groups preset (JSON, optional, overrides default)",
+        type=["json"],
+        key="group_preset_uploader",
+    )
+    if preset_file is not None:
+        try:
+            preset = json.load(preset_file)
+            st.session_state["group_assignments"] = preset.get("group_assignments", {})
+            st.session_state["group_prices"] = preset.get("group_prices", {})
+            st.session_state["material_overrides"] = preset.get("material_overrides", {})
+            st.success("Loaded group preset from uploaded file.")
+        except Exception as e:
+            st.error(f"Failed to load preset: {e}")
+
+    # Materials list
     materials = sorted(
         {m for m in calc_df["Material"].dropna().unique()} if "Material" in calc_df.columns else []
     )
-    price_df = pd.DataFrame(
-        {"Material": materials, "Price per SQM (AUD)": [np.nan] * len(materials)}
-    )
 
-    edited_price_df = st.data_editor(
-        price_df,
-        num_rows="dynamic",
-        key="material_price_editor",
+    # Existing assignments/prices from session
+    existing_assignments = st.session_state.get("group_assignments", {})
+    existing_group_prices = st.session_state.get("group_prices", {})
+    existing_overrides = st.session_state.get("material_overrides", {})
+
+    # Build group assignment table
+    group_assign_rows = []
+    for m in materials:
+        group_assign_rows.append(
+            {
+                "Material": m,
+                "Group": existing_assignments.get(m, ""),
+            }
+        )
+    group_assign_df = pd.DataFrame(group_assign_rows)
+
+    st.markdown("**Step 1 – Assign materials to groups**")
+    edited_group_assign_df = st.data_editor(
+        group_assign_df,
+        num_rows="fixed",
         use_container_width=True,
+        key="group_assign_editor",
     )
 
-    # Merge prices back
-    calc_with_price = calc_df.merge(
-        edited_price_df, how="left", on="Material"
+    # Derive list of groups
+    groups = sorted(
+        {
+            str(g).strip()
+            for g in edited_group_assign_df["Group"].dropna().unique()
+            if str(g).strip() != ""
+        }
     )
 
-    # Base price per SQM (AUD)
-    calc_with_price["Price per SQM (AUD)"] = calc_with_price["Price per SQM (AUD)"]
+    # Build group price table
+    group_price_rows = []
+    for g in groups:
+        group_price_rows.append(
+            {
+                "Group": g,
+                "Group Price per SQM (AUD)": existing_group_prices.get(g, np.nan),
+            }
+        )
+    group_price_df = pd.DataFrame(group_price_rows)
+
+    st.markdown("**Step 2 – Set group prices (per SQM, AUD)**")
+    edited_group_price_df = st.data_editor(
+        group_price_df,
+        num_rows="dynamic",
+        use_container_width=True,
+        key="group_price_editor",
+    )
+
+    # Individual material override prices
+    st.markdown("**Step 3 – Optional material overrides (per SQM, AUD)**")
+    override_rows = []
+    for m in materials:
+        override_rows.append(
+            {
+                "Material": m,
+                "Override Price per SQM (AUD)": existing_overrides.get(m, np.nan),
+            }
+        )
+    override_df = pd.DataFrame(override_rows)
+    edited_override_df = st.data_editor(
+        override_df,
+        num_rows="fixed",
+        use_container_width=True,
+        key="material_override_editor",
+    )
+
+    # Save latest presets into session_state
+    st.session_state["group_assignments"] = dict(
+        zip(edited_group_assign_df["Material"], edited_group_assign_df["Group"])
+    )
+    st.session_state["group_prices"] = dict(
+        zip(edited_group_price_df["Group"], edited_group_price_df["Group Price per SQM (AUD)"])
+    )
+    st.session_state["material_overrides"] = dict(
+        zip(edited_override_df["Material"], edited_override_df["Override Price per SQM (AUD)"])
+    )
+
+    # Build preset data from current state
+    preset_data = {
+        "group_assignments": st.session_state["group_assignments"],
+        "group_prices": st.session_state["group_prices"],
+        "material_overrides": st.session_state["material_overrides"],
+    }
+
+    st.markdown("**Preset saving options**")
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        save_mode = st.radio(
+            "How should these pricing changes be saved?",
+            [
+                "Only for this session (do not update JSON on server)",
+                "Update default JSON on server (material_groups_default.json)",
+            ],
+            index=0,
+            help=(
+                "If you choose to update the default JSON, the app will try to overwrite "
+                "'material_groups_default.json' in the current environment. On Streamlit Cloud "
+                "this may not persist across deployments; use the download option to commit to GitHub."
+            ),
+        )
+
+        if st.button("Apply save option now"):
+            if save_mode.startswith("Update default JSON"):
+                try:
+                    with open("material_groups_default.json", "w", encoding="utf-8") as f:
+                        json.dump(preset_data, f, indent=2)
+                    st.success("Updated material_groups_default.json on server.")
+                except Exception as e:
+                    st.error(f"Could not update default JSON on server: {e}")
+            else:
+                st.info("Changes kept only in this session (JSON file not modified).")
+
+    with col_right:
+        preset_bytes = BytesIO(json.dumps(preset_data, indent=2).encode("utf-8"))
+        st.download_button(
+            "Download current material group preset (JSON)",
+            data=preset_bytes,
+            file_name="material_groups_preset.json",
+            mime="application/json",
+            help=(
+                "Download the latest preset and commit it to your Git repo if you want it "
+                "to be the new default next time you deploy."
+            ),
+        )
+
+    # ---------- Apply pricing ----------
+
+    st.subheader("Apply grouped pricing")
+
+    group_assignment_map = st.session_state["group_assignments"]
+    group_price_map = st.session_state["group_prices"]
+    material_override_map = st.session_state["material_overrides"]
+
+    calc_with_price = calc_df.copy()
+
+    # Resolve base price per SQM (AUD) for each row:
+    # 1) If material override exists, use that
+    # 2) Else if group has a price, use group price
+    # 3) Else NaN
+    def resolve_base_price(material):
+        override = material_override_map.get(material)
+        if override is not None and not pd.isna(override):
+            return override
+        group = group_assignment_map.get(material)
+        if group:
+            gp = group_price_map.get(group)
+            if gp is not None and not pd.isna(gp):
+                return gp
+        return np.nan
+
+    calc_with_price["Base Price per SQM (AUD)"] = calc_with_price["Material"].apply(
+        resolve_base_price
+    )
 
     # Apply DS loading to get effective price (AUD)
     ds_factor = 1.0 + double_sided_loading_percent / 100.0
     calc_with_price["Effective Price per SQM (AUD)"] = calc_with_price.apply(
-        lambda r: r["Price per SQM (AUD)"] * ds_factor if r.get("Side") == "DS" else r["Price per SQM (AUD)"],
+        lambda r: r["Base Price per SQM (AUD)"] * ds_factor if r.get("Side") == "DS" else r["Base Price per SQM (AUD)"],
         axis=1,
     )
 
@@ -725,8 +903,8 @@ if calc_df is not None:
 
     # Optional converted currency
     if display_currency.upper() != "AUD" or abs(conversion_rate - 1.0) > 1e-9:
-        calc_with_price[f"Price per SQM ({display_currency})"] = (
-            calc_with_price["Price per SQM (AUD)"] * conversion_rate
+        calc_with_price[f"Base Price per SQM ({display_currency})"] = (
+            calc_with_price["Base Price per SQM (AUD)"] * conversion_rate
         )
         calc_with_price[f"Effective Price per SQM ({display_currency})"] = (
             calc_with_price["Effective Price per SQM (AUD)"] * conversion_rate
@@ -741,7 +919,7 @@ if calc_df is not None:
             calc_with_price["Price per run (AUD)"] * conversion_rate
         )
 
-    # Round all numeric price columns to 2 decimals
+    # Round all numeric price-related columns to 2 decimals
     price_cols = [c for c in calc_with_price.columns if "Price" in c]
     for col in price_cols:
         calc_with_price[col] = calc_with_price[col].round(2)
@@ -753,7 +931,7 @@ if calc_df is not None:
             lambda x: "" if pd.isna(x) else f"${x:,.2f}"
         )
 
-    st.subheader("Final calculation table (with pricing, formatted)")
+    st.subheader("Final calculation table (with grouped pricing, formatted)")
     st.dataframe(display_df)
 
     # Download calculated table (numeric, rounded) as Excel
