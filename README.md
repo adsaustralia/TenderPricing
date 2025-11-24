@@ -1,1 +1,1 @@
-Tender SQM Mapping Wizard v13.5
+Tender SQM Mapping Wizard v13.5 – Streamlit Cloud ready.
