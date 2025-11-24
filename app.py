@@ -332,8 +332,7 @@ if uploaded_file is None:
     st.info("Please upload an Excel file to begin.")
     st.stop()
 
-# IMPORTANT FIX: use getvalue() instead of read() so the file content
-# is available on every rerun and typing in data_editor doesn't wipe out the data.
+# IMPORTANT: use getvalue() so the file content is available on every rerun
 file_bytes = uploaded_file.getvalue()
 
 # --- Load sheet list ---
@@ -703,21 +702,26 @@ if calc_df is not None:
     # ---------- Material groups + pricing presets ----------
     st.subheader("Material Groups & Pricing Presets")
 
-    # Load saved preset (optional override of default)
+    # Load saved preset (optional override of default) – only ONCE per uploaded file
     preset_file = st.file_uploader(
-        "Load saved material groups preset (JSON, optional, overrides default)",
+        "Load saved material groups preset (JSON, optional, overrides default ONCE)",
         type=["json"],
         key="group_preset_uploader",
     )
     if preset_file is not None:
-        try:
-            preset = json.load(preset_file)
-            st.session_state["group_assignments"] = preset.get("group_assignments", {})
-            st.session_state["group_prices"] = preset.get("group_prices", {})
-            st.session_state["material_overrides"] = preset.get("material_overrides", {})
-            st.success("Loaded group preset from uploaded file.")
-        except Exception as e:
-            st.error(f"Failed to load preset: {e}")
+        if "preset_file_loaded_once" not in st.session_state:
+            st.session_state["preset_file_loaded_once"] = False
+
+        if not st.session_state["preset_file_loaded_once"]:
+            try:
+                preset = json.load(preset_file)
+                st.session_state["group_assignments"] = preset.get("group_assignments", {})
+                st.session_state["group_prices"] = preset.get("group_prices", {})
+                st.session_state["material_overrides"] = preset.get("material_overrides", {})
+                st.session_state["preset_file_loaded_once"] = True
+                st.success("Loaded group preset from uploaded file (will not auto-reload on each keystroke).")
+            except Exception as e:
+                st.error(f"Failed to load preset: {e}")
 
     # Materials list
     materials = sorted(
@@ -794,7 +798,7 @@ if calc_df is not None:
         key="material_override_editor",
     )
 
-    # Save latest presets into session_state
+    # Save latest presets into session_state (based on what you typed)
     st.session_state["group_assignments"] = dict(
         zip(edited_group_assign_df["Material"], edited_group_assign_df["Group"])
     )
