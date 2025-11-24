@@ -1,4 +1,4 @@
-# Tender Pricing App (Steps 1–3) – Excel-style Preview
+# Tender Pricing App (Excel-style, SQM + Pricing, Currency Conversion)
 
 This Streamlit app lets you:
 
@@ -7,11 +7,17 @@ This Streamlit app lets you:
    - Row numbers: `1, 2, 3, ...`
    - Row 1 contains your original header names.
 2. Hide/unhide rows and columns (without deleting them) and export a workbook with those rows/columns marked as hidden.
-3. Map fields like Size, Material, Qty per annum, Qty per run, and DS/SS information to calculate:
+3. Map fields like Size, Material, Qty per annum, Qty per run, Runs per annum, and DS/SS information to calculate:
    - SQM per unit / per annum / per run
-   - Price per unit / per annum / per run (based on Material $/sqm and DS loading %).
+   - Price per unit / per annum / per run
+4. Handle **Qty per run** either as:
+   - An explicit "Qty per run" column/row, OR
+   - `Qty per annum ÷ Runs per annum`.
+5. Enter **Material Price per SQM (AUD)** and apply:
+   - Double-sided loading % for DS items
+   - Optional **currency conversion** to another display currency (e.g. USD, EUR).
 
-All row references and column references in the UI are **Excel-style** so they match what you see in your original workbook.
+All prices are rounded to **2 decimal places**. In the UI, price columns are displayed with a leading `$` and you can configure the display currency code (default AUD) and a conversion rate (e.g. `1 AUD = 0.65 USD`). The exported Excel file contains the **numeric values** (rounded to 2 decimals) for further use.
 
 ## How to run locally
 

@@ -27,7 +27,6 @@ def to_excel_view(df: pd.DataFrame) -> pd.DataFrame:
     - Row 1 contains the original header names.
     """
     letters = [num_to_col_letters(i + 1) for i in range(len(df.columns))]
-    # First row = original headers, remaining rows = data
     data = [list(df.columns)] + df.astype(object).values.tolist()
     excel_df = pd.DataFrame(data, columns=letters)
     excel_df.index = range(1, len(excel_df) + 1)
@@ -48,7 +47,6 @@ def parse_dimension_to_sqm(dim_str: str) -> float:
     s = str(dim_str).lower()
     s = s.replace("×", "x")
 
-    # Find up to two numbers with optional units
     matches = re.findall(r'(\d+(\.\d+)?)\s*(mm|cm|m)?', s)
     if len(matches) < 2:
         return np.nan
@@ -92,6 +90,7 @@ def build_items_from_rows(
     material_col_letter,
     qty_annum_col_letter,
     qty_run_col_letter,
+    runs_pa_col_letter,
     side_mode,
     side_col_letter,
     side_source_letter,
@@ -101,6 +100,9 @@ def build_items_from_rows(
 ):
     """
     Items are in rows (BP-style).
+    Supports either:
+    - explicit Qty per run column, OR
+    - Qty per annum + Runs p.a. column -> Qty per run = Qty per annum / Runs p.a.
     """
     letter_to_header = col_letters_map
     result_rows = []
@@ -112,6 +114,9 @@ def build_items_from_rows(
     )
     qty_run_col = (
         letter_to_header.get(qty_run_col_letter) if qty_run_col_letter else None
+    )
+    runs_pa_col = (
+        letter_to_header.get(runs_pa_col_letter) if runs_pa_col_letter else None
     )
 
     side_col = (
@@ -136,11 +141,17 @@ def build_items_from_rows(
             if qty_annum_col
             else np.nan
         )
-        qty_run = (
-            pd.to_numeric(row[qty_run_col], errors="coerce")
-            if qty_run_col
-            else np.nan
-        )
+
+        if qty_run_col:
+            qty_run = pd.to_numeric(row[qty_run_col], errors="coerce")
+        elif runs_pa_col and qty_annum_col:
+            runs_pa = pd.to_numeric(row[runs_pa_col], errors="coerce")
+            if not np.isnan(qty_annum) and not np.isnan(runs_pa) and runs_pa > 0:
+                qty_run = qty_annum / runs_pa
+            else:
+                qty_run = np.nan
+        else:
+            qty_run = np.nan
 
         # Side detection
         if side_mode == "Separate column" and side_col:
@@ -185,6 +196,7 @@ def build_items_from_columns(
     material_row,
     qty_annum_row,
     qty_run_row,
+    runs_pa_row,
     side_mode,
     side_row,
     side_source_row,
@@ -194,19 +206,22 @@ def build_items_from_columns(
 ):
     """
     Items are in columns (Foot Locker-style).
-    size_row etc are 1-based row numbers in Excel.
+    Excel rows are used for mapping. Supports:
+    - explicit Qty per run row, OR
+    - Qty per annum row + Runs p.a. row -> Qty per run = Qty per annum / Runs p.a.
     """
     max_row, max_col = df.shape
     result_rows = []
 
-    # Convert to 0-based indices (data in df starts at Excel row 2)
+    # Convert Excel row to df index (Excel row 2 -> df index 0)
     def excel_to_df_row(excel_row):
-        return excel_row - 2  # Excel row 2 -> df index 0
+        return excel_row - 2
 
     size_r = excel_to_df_row(size_row) if size_row else None
     mat_r = excel_to_df_row(material_row) if material_row else None
     qty_annum_r = excel_to_df_row(qty_annum_row) if qty_annum_row else None
     qty_run_r = excel_to_df_row(qty_run_row) if qty_run_row else None
+    runs_pa_r = excel_to_df_row(runs_pa_row) if runs_pa_row else None
 
     side_r = excel_to_df_row(side_row) if (side_mode == "Separate row" and side_row) else None
     side_src_r = (
@@ -226,11 +241,17 @@ def build_items_from_columns(
             if qty_annum_r is not None
             else np.nan
         )
-        qty_run = (
-            pd.to_numeric(df.iloc[qty_run_r, col_idx], errors="coerce")
-            if qty_run_r is not None
-            else np.nan
-        )
+
+        if qty_run_r is not None:
+            qty_run = pd.to_numeric(df.iloc[qty_run_r, col_idx], errors="coerce")
+        elif runs_pa_r is not None and qty_annum_r is not None:
+            runs_pa = pd.to_numeric(df.iloc[runs_pa_r, col_idx], errors="coerce")
+            if not np.isnan(qty_annum) and not np.isnan(runs_pa) and runs_pa > 0:
+                qty_run = qty_annum / runs_pa
+            else:
+                qty_run = np.nan
+        else:
+            qty_run = np.nan
 
         # Skip totally empty items
         if (
@@ -284,7 +305,7 @@ st.title("Tender Pricing App (Steps 1–3)")
 
 st.markdown(
     """
-**Step 1:** Upload Excel and view all rows/columns  
+**Step 1:** Upload Excel and view all rows/columns (Excel-style A,B,C + 1,2,3)  
 **Step 2:** Hide/Unhide rows & columns (without deleting)  
 **Step 3:** Map fields (Size, Material, Qty, DS/SS) and calculate SQM + Prices
 """
@@ -358,7 +379,6 @@ cols_to_hide_labels = st.multiselect(
     options=[col_labels[ltr] for ltr in all_letters],
     default=[],
 )
-# Convert back to letters
 cols_to_hide_letters = [opt.split(" - ")[0] for opt in cols_to_hide_labels]
 
 # Rows to hide (Excel-style rows: include header row 1)
@@ -422,6 +442,10 @@ st.markdown(
     """
 Here you tell the app **where** the data lives (columns vs rows) and how DS/SS is encoded,
 so it can calculate **square meters** and **pricing by material**.
+
+In this setup, **Qty per run** can either come from:
+- An explicit "Qty per run" column/row, OR
+- `Qty per annum ÷ Runs per annum`.
 """
 )
 
@@ -453,7 +477,19 @@ double_sided_loading_percent = st.number_input(
     step=1.0,
 )
 
-calc_df = None  # will hold result if we calculate
+# Currency configuration
+st.subheader("Currency configuration")
+
+st.caption("Base calculations are in AUD. You can also display a converted currency.")
+display_currency = st.text_input("Display currency code", value="AUD")
+conversion_rate = st.number_input(
+    f"Conversion rate (1 AUD = X {display_currency})",
+    value=1.0,
+    min_value=0.0001,
+    step=0.01,
+)
+
+calc_df = None  # will hold numeric result if we calculate
 
 if layout_type == "Items are in rows (BP-style)":
     st.subheader("Mapping (items in rows)")
@@ -474,10 +510,13 @@ if layout_type == "Items are in rows (BP-style)":
         ["material", "stock", "substrate"], letters[0] if letters else None
     )
     qty_annum_default = guess_letter(
-        ["annual", "per annum", "pa"], letters[0] if letters else None
+        ["annual", "per annum", "total annual volume", "pa"], letters[0] if letters else None
     )
     qty_run_default = guess_letter(
         ["per run", "run qty", "run quantity"], letters[0] if letters else None
+    )
+    runs_pa_default = guess_letter(
+        ["runs p.a", "approx runs", "runs pa"], letters[0] if letters else None
     )
 
     size_col_letter = select_letter(
@@ -501,10 +540,17 @@ if layout_type == "Items are in rows (BP-style)":
         allow_none=True,
     )
     qty_run_col_letter = select_letter(
-        "Quantity PER RUN column",
+        "Quantity PER RUN column (optional — leave None to derive from runs p.a)",
         options_letters=letters,
         default_letter=qty_run_default,
         key="qty_run_col_letter_rows",
+        allow_none=True,
+    )
+    runs_pa_col_letter = select_letter(
+        "Runs PER ANNUM column (e.g. Approx runs p.a, optional)",
+        options_letters=letters,
+        default_letter=runs_pa_default,
+        key="runs_pa_col_letter_rows",
         allow_none=True,
     )
 
@@ -539,6 +585,7 @@ if layout_type == "Items are in rows (BP-style)":
             material_col_letter=material_col_letter,
             qty_annum_col_letter=qty_annum_col_letter,
             qty_run_col_letter=qty_run_col_letter,
+            runs_pa_col_letter=runs_pa_col_letter,
             side_mode=side_mode,
             side_col_letter=side_col_letter,
             side_source_letter=side_source_letter,
@@ -574,11 +621,17 @@ elif layout_type == "Items are in columns (Foot Locker-style)":
         options=["(none)"] + row_options,
         index=0,
     )
+    runs_pa_row = st.selectbox(
+        "Excel row that contains Runs PER ANNUM (across columns, optional)",
+        options=["(none)"] + row_options,
+        index=0,
+    )
 
     # Convert "(none)" to None
     material_row = None if material_row == "(none)" else material_row
     qty_annum_row = None if qty_annum_row == "(none)" else qty_annum_row
     qty_run_row = None if qty_run_row == "(none)" else qty_run_row
+    runs_pa_row = None if runs_pa_row == "(none)" else runs_pa_row
 
     st.markdown("**Where is Single / Double-sided information?**")
     side_mode = st.selectbox(
@@ -608,6 +661,7 @@ elif layout_type == "Items are in columns (Foot Locker-style)":
             material_row=material_row,
             qty_annum_row=qty_annum_row,
             qty_run_row=qty_run_row,
+            runs_pa_row=runs_pa_row,
             side_mode=side_mode,
             side_row=side_row,
             side_source_row=side_source_row,
@@ -619,17 +673,21 @@ elif layout_type == "Items are in columns (Foot Locker-style)":
 # ---------- Show calculation results + Material price mapping ----------
 
 if calc_df is not None:
-    st.subheader("Calculated SQM table (before pricing)")
+    st.subheader("Calculated SQM table (before pricing, numeric)")
+    # Round sqm and qty to 2 decimals for clarity
+    for col in ["Qty per annum", "Qty per run", "SQM per unit", "SQM per annum", "SQM per run"]:
+        if col in calc_df.columns:
+            calc_df[col] = calc_df[col].round(2)
     st.dataframe(calc_df)
 
-    st.subheader("Material Pricing (per sqm)")
+    st.subheader("Material Pricing (per sqm, AUD)")
 
     # Build unique material list for pricing
     materials = sorted(
         {m for m in calc_df["Material"].dropna().unique()} if "Material" in calc_df.columns else []
     )
     price_df = pd.DataFrame(
-        {"Material": materials, "Price per SQM": [np.nan] * len(materials)}
+        {"Material": materials, "Price per SQM (AUD)": [np.nan] * len(materials)}
     )
 
     edited_price_df = st.data_editor(
@@ -644,28 +702,61 @@ if calc_df is not None:
         edited_price_df, how="left", on="Material"
     )
 
-    # Apply DS loading
+    # Base price per SQM (AUD)
+    calc_with_price["Price per SQM (AUD)"] = calc_with_price["Price per SQM (AUD)"]
+
+    # Apply DS loading to get effective price (AUD)
     ds_factor = 1.0 + double_sided_loading_percent / 100.0
-    calc_with_price["Effective Price per SQM"] = calc_with_price.apply(
-        lambda r: r["Price per SQM"] * ds_factor if r.get("Side") == "DS" else r["Price per SQM"],
+    calc_with_price["Effective Price per SQM (AUD)"] = calc_with_price.apply(
+        lambda r: r["Price per SQM (AUD)"] * ds_factor if r.get("Side") == "DS" else r["Price per SQM (AUD)"],
         axis=1,
     )
 
-    # Price calculations
-    calc_with_price["Price per unit"] = (
-        calc_with_price["SQM per unit"] * calc_with_price["Effective Price per SQM"]
+    # Price calculations in AUD
+    calc_with_price["Price per unit (AUD)"] = (
+        calc_with_price["SQM per unit"] * calc_with_price["Effective Price per SQM (AUD)"]
     )
-    calc_with_price["Price per annum"] = (
-        calc_with_price["SQM per annum"] * calc_with_price["Effective Price per SQM"]
+    calc_with_price["Price per annum (AUD)"] = (
+        calc_with_price["SQM per annum"] * calc_with_price["Effective Price per SQM (AUD)"]
     )
-    calc_with_price["Price per run"] = (
-        calc_with_price["SQM per run"] * calc_with_price["Effective Price per SQM"]
+    calc_with_price["Price per run (AUD)"] = (
+        calc_with_price["SQM per run"] * calc_with_price["Effective Price per SQM (AUD)"]
     )
 
-    st.subheader("Final calculation table (including pricing)")
-    st.dataframe(calc_with_price)
+    # Optional converted currency
+    if display_currency.upper() != "AUD" or abs(conversion_rate - 1.0) > 1e-9:
+        calc_with_price[f"Price per SQM ({display_currency})"] = (
+            calc_with_price["Price per SQM (AUD)"] * conversion_rate
+        )
+        calc_with_price[f"Effective Price per SQM ({display_currency})"] = (
+            calc_with_price["Effective Price per SQM (AUD)"] * conversion_rate
+        )
+        calc_with_price[f"Price per unit ({display_currency})"] = (
+            calc_with_price["Price per unit (AUD)"] * conversion_rate
+        )
+        calc_with_price[f"Price per annum ({display_currency})"] = (
+            calc_with_price["Price per annum (AUD)"] * conversion_rate
+        )
+        calc_with_price[f"Price per run ({display_currency})"] = (
+            calc_with_price["Price per run (AUD)"] * conversion_rate
+        )
 
-    # Download calculated table
+    # Round all numeric price columns to 2 decimals
+    price_cols = [c for c in calc_with_price.columns if "Price" in c]
+    for col in price_cols:
+        calc_with_price[col] = calc_with_price[col].round(2)
+
+    # Build a display copy with $ sign for price columns
+    display_df = calc_with_price.copy()
+    for col in price_cols:
+        display_df[col] = display_df[col].apply(
+            lambda x: "" if pd.isna(x) else f"${x:,.2f}"
+        )
+
+    st.subheader("Final calculation table (with pricing, formatted)")
+    st.dataframe(display_df)
+
+    # Download calculated table (numeric, rounded) as Excel
     out_calc = BytesIO()
     calc_with_price.to_excel(out_calc, index=False, sheet_name="CALC")
     out_calc.seek(0)
