@@ -1,14 +1,17 @@
-# Tender Pricing App (Steps 1–3)
+# Tender Pricing App (Steps 1–3) – Excel-style Preview
 
 This Streamlit app lets you:
 
-1. Upload an Excel file and view all rows/columns exactly as they appear in Excel (only the header row, no extra mapping tables).
+1. Upload an Excel file and view it in an **Excel-style grid**:
+   - Column headers: `A, B, C, ...`
+   - Row numbers: `1, 2, 3, ...`
+   - Row 1 contains your original header names.
 2. Hide/unhide rows and columns (without deleting them) and export a workbook with those rows/columns marked as hidden.
 3. Map fields like Size, Material, Qty per annum, Qty per run, and DS/SS information to calculate:
    - SQM per unit / per annum / per run
    - Price per unit / per annum / per run (based on Material $/sqm and DS loading %).
 
-Column selections in the UI use Excel-style labels like `A - Lot ID`, `B - Country` etc., so you can think in Excel terms while the data still displays like your original sheet.
+All row references and column references in the UI are **Excel-style** so they match what you see in your original workbook.
 
 ## How to run locally
 

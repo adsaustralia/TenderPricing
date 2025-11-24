@@ -19,6 +19,22 @@ def num_to_col_letters(n: int) -> str:
     return result
 
 
+def to_excel_view(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Build a view that looks like Excel:
+    - Column headers: A, B, C...
+    - Row numbers: 1, 2, 3...
+    - Row 1 contains the original header names.
+    """
+    letters = [num_to_col_letters(i + 1) for i in range(len(df.columns))]
+    # First row = original headers, remaining rows = data
+    data = [list(df.columns)] + df.astype(object).values.tolist()
+    excel_df = pd.DataFrame(data, columns=letters)
+    excel_df.index = range(1, len(excel_df) + 1)
+    excel_df.index.name = ""
+    return excel_df
+
+
 def parse_dimension_to_sqm(dim_str: str) -> float:
     """
     Parse strings like '841mm x 1189mm', '594 x 841mm', '1.2m x 2m' to sqm.
@@ -147,7 +163,7 @@ def build_items_from_rows(
 
         result_rows.append(
             {
-                "Source Row": idx + 1,  # Excel-style row (data row)
+                "Source Row": idx + 2,  # Excel-style row: +2 because header is row 1
                 "Size": size_val,
                 "Material": material_val,
                 "Qty per annum": qty_annum,
@@ -178,20 +194,23 @@ def build_items_from_columns(
 ):
     """
     Items are in columns (Foot Locker-style).
-    size_row etc are 1-based row numbers.
+    size_row etc are 1-based row numbers in Excel.
     """
     max_row, max_col = df.shape
     result_rows = []
 
-    # Convert to 0-based indices (if provided)
-    size_r = size_row - 1 if size_row else None
-    mat_r = material_row - 1 if material_row else None
-    qty_annum_r = qty_annum_row - 1 if qty_annum_row else None
-    qty_run_r = qty_run_row - 1 if qty_run_row else None
+    # Convert to 0-based indices (data in df starts at Excel row 2)
+    def excel_to_df_row(excel_row):
+        return excel_row - 2  # Excel row 2 -> df index 0
 
-    side_r = side_row - 1 if (side_mode == "Separate row" and side_row) else None
+    size_r = excel_to_df_row(size_row) if size_row else None
+    mat_r = excel_to_df_row(material_row) if material_row else None
+    qty_annum_r = excel_to_df_row(qty_annum_row) if qty_annum_row else None
+    qty_run_r = excel_to_df_row(qty_run_row) if qty_run_row else None
+
+    side_r = excel_to_df_row(side_row) if (side_mode == "Separate row" and side_row) else None
     side_src_r = (
-        side_source_row - 1
+        excel_to_df_row(side_source_row)
         if (side_mode == "Embedded in another row" and side_source_row)
         else None
     )
@@ -289,9 +308,10 @@ sheet_name = st.selectbox("Select sheet", options=excel_file.sheet_names)
 # --- Read selected sheet into DataFrame ---
 df = pd.read_excel(BytesIO(file_bytes), sheet_name=sheet_name)
 
-# Show the sheet exactly like Excel (headers only, no extra mapping table)
-st.subheader(f"Sheet preview: {sheet_name}")
-st.dataframe(df)
+# Show the sheet in Excel-like view (A,B,C... and rows 1,2,3...)
+st.subheader(f"Sheet preview (Excel-style): {sheet_name}")
+excel_view = to_excel_view(df)
+st.dataframe(excel_view)
 
 # --- Build Excel-style column letter mapping (internal) ---
 # And also build friendly labels like "A - Lot ID"
@@ -340,31 +360,29 @@ cols_to_hide_labels = st.multiselect(
 )
 # Convert back to letters
 cols_to_hide_letters = [opt.split(" - ")[0] for opt in cols_to_hide_labels]
-cols_to_hide_headers = [col_letters[letter] for letter in cols_to_hide_letters]
 
-# Rows to hide (1-based rows in DataFrame)
-max_row = len(df)
+# Rows to hide (Excel-style rows: include header row 1)
+max_row = len(df) + 1  # +1 for header row
 row_numbers = list(range(1, max_row + 1))
 rows_to_hide_display = st.multiselect(
-    "Select rows to HIDE (by row number in this table):",
+    "Select rows to HIDE (by Excel row number):",
     options=row_numbers,
     default=[],
 )
 
-# Preview with hidden rows/cols
-preview_df = df.copy()
-if cols_to_hide_headers:
-    preview_df = preview_df.drop(columns=cols_to_hide_headers)
+# Preview with hidden rows/cols (Excel-like view)
+preview_excel_view = excel_view.copy()
+if cols_to_hide_letters:
+    preview_excel_view = preview_excel_view.drop(columns=cols_to_hide_letters)
 if rows_to_hide_display:
-    indices_to_drop = [r - 1 for r in rows_to_hide_display]
-    preview_df = preview_df.drop(index=indices_to_drop)
+    preview_excel_view = preview_excel_view.drop(index=rows_to_hide_display)
 
-st.subheader(f"Preview with hidden rows/columns: {sheet_name}")
+st.subheader(f"Preview with hidden rows/columns (Excel-style): {sheet_name}")
 st.caption(
     "Preview hides selected rows/columns. Original workbook remains intact; "
     "exported file will mark them as hidden in Excel."
 )
-st.dataframe(preview_df)
+st.dataframe(preview_excel_view)
 
 # Export with hidden rows/columns
 st.subheader("Export with Hidden Rows / Columns")
@@ -376,10 +394,9 @@ if st.button("Prepare file with hidden rows/columns"):
     for letter in cols_to_hide_letters:
         ws.column_dimensions[letter].hidden = True
 
-    # Hide selected rows (data rows: +1 because header is row 1)
+    # Hide selected rows (Excel rows directly)
     for r in rows_to_hide_display:
-        excel_row = r + 1
-        ws.row_dimensions[excel_row].hidden = True
+        ws.row_dimensions[r].hidden = True
 
     out_buf = BytesIO()
     wb.save(out_buf)
@@ -534,25 +551,26 @@ elif layout_type == "Items are in columns (Foot Locker-style)":
     st.subheader("Mapping (items in columns)")
 
     max_row, max_col = df.shape
-    row_options = list(range(1, max_row + 1))
+    # Excel rows: header row is 1, df data starts at Excel row 2
+    row_options = list(range(2, max_row + 2))
 
     size_row = st.selectbox(
-        "Row number that contains Size / Dimensions (across columns)",
+        "Excel row that contains Size / Dimensions (across columns)",
         options=row_options,
         index=0,
     )
     material_row = st.selectbox(
-        "Row number that contains Material name (across columns)",
+        "Excel row that contains Material name (across columns)",
         options=["(none)"] + row_options,
         index=0,
     )
     qty_annum_row = st.selectbox(
-        "Row number that contains Quantity PER ANNUM (across columns)",
+        "Excel row that contains Quantity PER ANNUM (across columns)",
         options=["(none)"] + row_options,
         index=0,
     )
     qty_run_row = st.selectbox(
-        "Row number that contains Quantity PER RUN (across columns)",
+        "Excel row that contains Quantity PER RUN (across columns)",
         options=["(none)"] + row_options,
         index=0,
     )
@@ -573,12 +591,12 @@ elif layout_type == "Items are in columns (Foot Locker-style)":
 
     if side_mode == "Separate row":
         side_row = st.selectbox(
-            "Row that contains DS/SS values (across columns)",
+            "Excel row that contains DS/SS values (across columns)",
             options=row_options,
         )
     elif side_mode == "Embedded in another row":
         side_source_row = st.selectbox(
-            "Row where DS/SS text appears (e.g. in Size or Description row)",
+            "Excel row where DS/SS text appears (e.g. in Size or Description row)",
             options=row_options,
             index=row_options.index(size_row) if size_row in row_options else 0,
         )
