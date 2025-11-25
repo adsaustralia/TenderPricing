@@ -324,6 +324,8 @@ if "preset_file_loaded_once" not in st.session_state:
     st.session_state["preset_file_loaded_once"] = False
 if "manual_groups" not in st.session_state:
     st.session_state["manual_groups"] = []
+if "group_price_df" not in st.session_state:
+    st.session_state["group_price_df"] = None
 
 # Load default preset only once at very beginning (if nothing in state yet)
 if not st.session_state["group_assignments"] and not st.session_state["group_prices"]:
@@ -746,10 +748,19 @@ if calc_df is not None:
     manual_groups = st.session_state.get("manual_groups", [])
 
     # ---------- GROUP NAME OPTIONS (for dropdown) ----------
-    # Anything that has ever been used as a group name:
+    group_price_df_state = st.session_state.get("group_price_df")
+    price_groups_from_df = []
+    if group_price_df_state is not None and "Group" in group_price_df_state.columns:
+        price_groups_from_df = [
+            str(g).strip()
+            for g in group_price_df_state["Group"].dropna().unique()
+            if str(g).strip() != ""
+        ]
+
     group_options = set(manual_groups)
     group_options.update(g for g in existing_group_prices.keys() if g)
     group_options.update(g for g in existing_assignments.values() if g)
+    group_options.update(price_groups_from_df)
     group_options = sorted({str(g).strip() for g in group_options if str(g).strip() != ""})
 
     st.markdown("**Add a new group name (optional)**")
@@ -760,7 +771,6 @@ if calc_df is not None:
             manual_groups.append(new_group_clean)
             st.session_state["manual_groups"] = manual_groups
             st.success(f"Added '{new_group_clean}' to available group names. You can now pick it from dropdown.")
-        # clear input by rerun; no need to keep text
 
     # Build group assignment table
     group_assign_rows = []
@@ -774,8 +784,6 @@ if calc_df is not None:
     group_assign_df = pd.DataFrame(group_assign_rows)
 
     st.markdown("**Step 1 – Assign materials to groups**")
-    # Use a SelectboxColumn so you can PICK existing group names,
-    # but also allow blank (then the user can type a new group name above and use the dropdown).
     edited_group_assign_df = st.data_editor(
         group_assign_df,
         num_rows="fixed",
@@ -791,33 +799,62 @@ if calc_df is not None:
         },
     )
 
-    # Derive list of groups (from edited assignments + existing prices + manual groups)
-    groups = set(
+    # Derive list of groups (from edited assignments + existing groups)
+    groups_from_assignments = set(
         str(g).strip()
         for g in edited_group_assign_df["Group"].dropna().unique()
         if str(g).strip() != ""
     )
-    groups.update(group_options)
-    groups = sorted(groups)
+    all_groups = sorted(set(group_options).union(groups_from_assignments))
 
-    # Build group price table
-    group_price_rows = []
-    for g in groups:
-        group_price_rows.append(
-            {
-                "Group": g,
-                "Group Price per SQM (AUD)": existing_group_prices.get(g, np.nan),
-            }
+    # ---------- Group price table (PERSISTENT) ----------
+    group_price_df = st.session_state.get("group_price_df")
+    if group_price_df is None:
+        # First time: create from all_groups + existing_group_prices
+        rows = []
+        for g in all_groups:
+            rows.append(
+                {
+                    "Group": g,
+                    "Group Price per SQM (AUD)": existing_group_prices.get(g, np.nan),
+                }
+            )
+        group_price_df = pd.DataFrame(rows)
+    else:
+        # Ensure any new group has a row
+        existing_groups_in_df = set(
+            str(g).strip()
+            for g in group_price_df["Group"].dropna().unique()
+            if str(g).strip() != ""
         )
-    group_price_df = pd.DataFrame(group_price_rows)
+        missing_groups = [g for g in all_groups if g not in existing_groups_in_df]
+        if missing_groups:
+            add_rows = pd.DataFrame(
+                [
+                    {"Group": g, "Group Price per SQM (AUD)": existing_group_prices.get(g, np.nan)}
+                    for g in missing_groups
+                ]
+            )
+            group_price_df = pd.concat([group_price_df, add_rows], ignore_index=True)
+
+    st.session_state["group_price_df"] = group_price_df
 
     st.markdown("**Step 2 – Set group prices (per SQM, AUD)**")
     edited_group_price_df = st.data_editor(
-        group_price_df,
+        st.session_state["group_price_df"],
         num_rows="dynamic",
         use_container_width=True,
         key="group_price_editor",
     )
+
+    # Save back the edited df and dict
+    st.session_state["group_price_df"] = edited_group_price_df
+    new_group_prices = {}
+    for _, row in edited_group_price_df.iterrows():
+        g = str(row.get("Group", "")).strip()
+        if g:
+            new_group_prices[g] = row.get("Group Price per SQM (AUD)", np.nan)
+    st.session_state["group_prices"] = new_group_prices
 
     # Individual material override prices
     st.markdown("**Step 3 – Optional material overrides (per SQM, AUD)**")
@@ -840,9 +877,6 @@ if calc_df is not None:
     # Save latest presets into session_state (based on what you picked/typed)
     st.session_state["group_assignments"] = dict(
         zip(edited_group_assign_df["Material"], edited_group_assign_df["Group"])
-    )
-    st.session_state["group_prices"] = dict(
-        zip(edited_group_price_df["Group"], edited_group_price_df["Group Price per SQM (AUD)"])
     )
     st.session_state["material_overrides"] = dict(
         zip(edited_override_df["Material"], edited_override_df["Override Price per SQM (AUD)"])
