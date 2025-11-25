@@ -311,8 +311,20 @@ st.markdown(
 """
 )
 
-# ---------- Load default preset at startup (from repo) ----------
+# ---------- Initialise session_state ----------
 if "group_assignments" not in st.session_state:
+    st.session_state["group_assignments"] = {}
+if "group_prices" not in st.session_state:
+    st.session_state["group_prices"] = {}
+if "material_overrides" not in st.session_state:
+    st.session_state["material_overrides"] = {}
+if "calc_df" not in st.session_state:
+    st.session_state["calc_df"] = None
+if "preset_file_loaded_once" not in st.session_state:
+    st.session_state["preset_file_loaded_once"] = False
+
+# Load default preset only once at very beginning (if nothing in state yet)
+if not st.session_state["group_assignments"] and not st.session_state["group_prices"]:
     try:
         with open("material_groups_default.json", "r", encoding="utf-8") as f:
             preset = json.load(f)
@@ -320,9 +332,7 @@ if "group_assignments" not in st.session_state:
         st.session_state["group_prices"] = preset.get("group_prices", {})
         st.session_state["material_overrides"] = preset.get("material_overrides", {})
     except Exception:
-        st.session_state["group_assignments"] = {}
-        st.session_state["group_prices"] = {}
-        st.session_state["material_overrides"] = {}
+        pass
 
 uploaded_file = st.file_uploader(
     "Upload Excel file", type=["xlsx", "xls"], accept_multiple_files=False
@@ -332,7 +342,7 @@ if uploaded_file is None:
     st.info("Please upload an Excel file to begin.")
     st.stop()
 
-# IMPORTANT: use getvalue() so the file content is available on every rerun
+# Use getvalue() so the file content is available on every rerun
 file_bytes = uploaded_file.getvalue()
 
 # --- Load sheet list ---
@@ -348,7 +358,6 @@ excel_view = to_excel_view(df)
 st.dataframe(excel_view)
 
 # --- Build Excel-style column letter mapping (internal) ---
-# And also build friendly labels like "A - Lot ID"
 col_letters = {}
 col_labels = {}
 for i, col_name in enumerate(df.columns):
@@ -508,7 +517,8 @@ conversion_rate = st.number_input(
     step=0.01,
 )
 
-calc_df = None  # will hold numeric result if we calculate
+# Start from stored calculation (so it survives reruns)
+calc_df = st.session_state["calc_df"]
 
 if layout_type == "Items are in rows (BP-style)":
     st.subheader("Mapping (items in rows)")
@@ -612,6 +622,7 @@ if layout_type == "Items are in rows (BP-style)":
             ss_synonyms=ss_synonyms,
             double_sided_loading_percent=double_sided_loading_percent,
         )
+        st.session_state["calc_df"] = calc_df
 
 elif layout_type == "Items are in columns (Foot Locker-style)":
     st.subheader("Mapping (items in columns)")
@@ -688,6 +699,7 @@ elif layout_type == "Items are in columns (Foot Locker-style)":
             ss_synonyms=ss_synonyms,
             double_sided_loading_percent=double_sided_loading_percent,
         )
+        st.session_state["calc_df"] = calc_df
 
 # ---------- Show calculation results + Material group pricing ----------
 
@@ -708,20 +720,16 @@ if calc_df is not None:
         type=["json"],
         key="group_preset_uploader",
     )
-    if preset_file is not None:
-        if "preset_file_loaded_once" not in st.session_state:
-            st.session_state["preset_file_loaded_once"] = False
-
-        if not st.session_state["preset_file_loaded_once"]:
-            try:
-                preset = json.load(preset_file)
-                st.session_state["group_assignments"] = preset.get("group_assignments", {})
-                st.session_state["group_prices"] = preset.get("group_prices", {})
-                st.session_state["material_overrides"] = preset.get("material_overrides", {})
-                st.session_state["preset_file_loaded_once"] = True
-                st.success("Loaded group preset from uploaded file (will not auto-reload on each keystroke).")
-            except Exception as e:
-                st.error(f"Failed to load preset: {e}")
+    if preset_file is not None and not st.session_state["preset_file_loaded_once"]:
+        try:
+            preset = json.load(preset_file)
+            st.session_state["group_assignments"] = preset.get("group_assignments", {})
+            st.session_state["group_prices"] = preset.get("group_prices", {})
+            st.session_state["material_overrides"] = preset.get("material_overrides", {})
+            st.session_state["preset_file_loaded_once"] = True
+            st.success("Loaded group preset from uploaded file (will not auto-reload on each keystroke).")
+        except Exception as e:
+            st.error(f"Failed to load preset: {e}")
 
     # Materials list
     materials = sorted(
