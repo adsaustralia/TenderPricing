@@ -326,8 +326,6 @@ if "calc_df" not in st.session_state:
     st.session_state["calc_df"] = None
 if "preset_file_loaded_once" not in st.session_state:
     st.session_state["preset_file_loaded_once"] = False
-if "manual_groups" not in st.session_state:
-    st.session_state["manual_groups"] = []
 
 # Load default preset only once at very beginning (if nothing in state yet)
 if not st.session_state["group_assignments"] and not st.session_state["group_prices"]:
@@ -477,7 +475,7 @@ In this setup, **Qty per run** can either come from:
 
 In the **Material Pricing** area you can:
 - Assign each material to a **Group name** (e.g. "3mm ACM", "Posters", "Window Vinyl").  
-- Either **type a new group name** OR **pick an existing group from a dropdown**.  
+- Type any group name directly in the table (no separate add box).  
 - Enter one **Group Price per SQM** to apply to all materials in that group.  
 - Optionally override a single material with its own price.  
 - Save/Load **group presets** so you can reuse them next campaign/tender.
@@ -748,37 +746,11 @@ if st.session_state["calc_df"] is not None:
     existing_assignments = st.session_state.get("group_assignments", {})
     existing_group_prices = st.session_state.get("group_prices", {})
     existing_overrides = st.session_state.get("material_overrides", {})
-    manual_groups = st.session_state.get("manual_groups", [])
 
-    # ---------- GROUP NAME OPTIONS (for dropdown) ----------
-    price_df_state = st.session_state.get("group_price_df")
-    groups_from_price_df = []
-    if price_df_state is not None and "Group" in price_df_state.columns:
-        groups_from_price_df = [
-            str(g).strip()
-            for g in price_df_state["Group"].dropna().unique()
-            if str(g).strip() != ""
-        ]
-
-    group_options = set(manual_groups)
-    group_options.update(g for g in existing_group_prices.keys() if g)
-    group_options.update(g for g in existing_assignments.values() if g)
-    group_options.update(groups_from_price_df)
-    group_options = sorted({str(g).strip() for g in group_options if str(g).strip() != ""})
-
-    st.markdown("**Add a new group name (optional)**")
-    new_group = st.text_input("Type a new group name and press Enter to add to the dropdown", value="")
-    if new_group:
-        new_group_clean = new_group.strip()
-        if new_group_clean and new_group_clean not in group_options:
-            manual_groups.append(new_group_clean)
-            st.session_state["manual_groups"] = manual_groups
-            st.success(f"Added '{new_group_clean}' to available group names. You can now pick it from dropdown.")
-
-    # ---------- Group assignment table (PERSISTENT) ----------
+    # ---------- Group assignment table (PERSISTENT, FREE TEXT) ----------
     group_assign_df = st.session_state.get("group_assign_df")
     if group_assign_df is None:
-        # First time: create from materials + existing assignments
+        # First time: create from materials + existing assignments (preset)
         rows = []
         for m in materials:
             rows.append(
@@ -789,7 +761,7 @@ if st.session_state["calc_df"] is not None:
             )
         group_assign_df = pd.DataFrame(rows)
     else:
-        # Ensure any new material gets a row
+        # Ensure any new material gets a row; remove any that disappeared
         existing_materials_in_df = set(group_assign_df["Material"])
         missing_materials = [m for m in materials if m not in existing_materials_in_df]
         if missing_materials:
@@ -797,6 +769,7 @@ if st.session_state["calc_df"] is not None:
                 [{"Material": m, "Group": existing_assignments.get(m, "")} for m in missing_materials]
             )
             group_assign_df = pd.concat([group_assign_df, add_rows], ignore_index=True)
+        group_assign_df = group_assign_df[group_assign_df["Material"].isin(materials)].reset_index(drop=True)
 
     st.session_state["group_assign_df"] = group_assign_df
 
@@ -807,12 +780,10 @@ if st.session_state["calc_df"] is not None:
         use_container_width=True,
         key="group_assign_editor",
         column_config={
-            "Group": st.column_config.SelectboxColumn(
-                "Group",
-                options=group_options,
-                required=False,
-                help="Pick an existing group name from dropdown. To create a new group name, use the text box above first."
-            )
+            "Material": st.column_config.TextColumn(disabled=True),
+            "Group": st.column_config.TextColumn(
+                help="Type a new or existing group name. Same name = same group."
+            ),
         },
     )
 
@@ -825,15 +796,15 @@ if st.session_state["calc_df"] is not None:
         new_group_assignments[mat] = grp
     st.session_state["group_assignments"] = new_group_assignments
 
-    # Derive list of groups (from edited assignments + group_options)
+    # Derive list of groups from assignments
     groups_from_assignments = set(
         str(g).strip()
         for g in edited_group_assign_df["Group"].dropna().unique()
         if str(g).strip() != ""
     )
-    all_groups = sorted(set(group_options).union(groups_from_assignments))
+    all_groups = sorted(groups_from_assignments)
 
-    # ---------- Group price table (PERSISTENT) ----------
+    # ---------- Group price table (PERSISTENT, FREE TEXT GROUP NAMES) ----------
     group_price_df = st.session_state.get("group_price_df")
     if group_price_df is None:
         rows = []
@@ -846,7 +817,7 @@ if st.session_state["calc_df"] is not None:
             )
         group_price_df = pd.DataFrame(rows)
     else:
-        # Ensure any new group has a row
+        # Ensure any new group has a row; keep existing rows as-is
         existing_groups_in_df = set(
             str(g).strip()
             for g in group_price_df["Group"].dropna().unique()
@@ -870,6 +841,10 @@ if st.session_state["calc_df"] is not None:
         num_rows="dynamic",
         use_container_width=True,
         key="group_price_editor",
+        column_config={
+            "Group": st.column_config.TextColumn(help="Must match the group names above if you want them to apply."),
+            "Group Price per SQM (AUD)": st.column_config.NumberColumn(format="%.4f"),
+        },
     )
 
     # Save back the edited df and dict
