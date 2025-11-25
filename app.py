@@ -312,6 +312,10 @@ st.markdown(
 )
 
 # ---------- Initialise session_state ----------
+if "group_assign_df" not in st.session_state:
+    st.session_state["group_assign_df"] = None
+if "group_price_df" not in st.session_state:
+    st.session_state["group_price_df"] = None
 if "group_assignments" not in st.session_state:
     st.session_state["group_assignments"] = {}
 if "group_prices" not in st.session_state:
@@ -324,8 +328,6 @@ if "preset_file_loaded_once" not in st.session_state:
     st.session_state["preset_file_loaded_once"] = False
 if "manual_groups" not in st.session_state:
     st.session_state["manual_groups"] = []
-if "group_price_df" not in st.session_state:
-    st.session_state["group_price_df"] = None
 
 # Load default preset only once at very beginning (if nothing in state yet)
 if not st.session_state["group_assignments"] and not st.session_state["group_prices"]:
@@ -708,7 +710,9 @@ elif layout_type == "Items are in columns (Foot Locker-style)":
 
 # ---------- Show calculation results + Material group pricing ----------
 
-if calc_df is not None:
+if st.session_state["calc_df"] is not None:
+    calc_df = st.session_state["calc_df"]
+
     st.subheader("Calculated SQM table (before pricing, numeric)")
     # Round sqm and qty to 2 decimals for clarity
     for col in ["Qty per annum", "Qty per run", "SQM per unit", "SQM per annum", "SQM per run"]:
@@ -741,26 +745,25 @@ if calc_df is not None:
         {m for m in calc_df["Material"].dropna().unique()} if "Material" in calc_df.columns else []
     )
 
-    # Existing assignments/prices from session
     existing_assignments = st.session_state.get("group_assignments", {})
     existing_group_prices = st.session_state.get("group_prices", {})
     existing_overrides = st.session_state.get("material_overrides", {})
     manual_groups = st.session_state.get("manual_groups", [])
 
     # ---------- GROUP NAME OPTIONS (for dropdown) ----------
-    group_price_df_state = st.session_state.get("group_price_df")
-    price_groups_from_df = []
-    if group_price_df_state is not None and "Group" in group_price_df_state.columns:
-        price_groups_from_df = [
+    price_df_state = st.session_state.get("group_price_df")
+    groups_from_price_df = []
+    if price_df_state is not None and "Group" in price_df_state.columns:
+        groups_from_price_df = [
             str(g).strip()
-            for g in group_price_df_state["Group"].dropna().unique()
+            for g in price_df_state["Group"].dropna().unique()
             if str(g).strip() != ""
         ]
 
     group_options = set(manual_groups)
     group_options.update(g for g in existing_group_prices.keys() if g)
     group_options.update(g for g in existing_assignments.values() if g)
-    group_options.update(price_groups_from_df)
+    group_options.update(groups_from_price_df)
     group_options = sorted({str(g).strip() for g in group_options if str(g).strip() != ""})
 
     st.markdown("**Add a new group name (optional)**")
@@ -772,20 +775,34 @@ if calc_df is not None:
             st.session_state["manual_groups"] = manual_groups
             st.success(f"Added '{new_group_clean}' to available group names. You can now pick it from dropdown.")
 
-    # Build group assignment table
-    group_assign_rows = []
-    for m in materials:
-        group_assign_rows.append(
-            {
-                "Material": m,
-                "Group": existing_assignments.get(m, ""),
-            }
-        )
-    group_assign_df = pd.DataFrame(group_assign_rows)
+    # ---------- Group assignment table (PERSISTENT) ----------
+    group_assign_df = st.session_state.get("group_assign_df")
+    if group_assign_df is None:
+        # First time: create from materials + existing assignments
+        rows = []
+        for m in materials:
+            rows.append(
+                {
+                    "Material": m,
+                    "Group": existing_assignments.get(m, ""),
+                }
+            )
+        group_assign_df = pd.DataFrame(rows)
+    else:
+        # Ensure any new material gets a row
+        existing_materials_in_df = set(group_assign_df["Material"])
+        missing_materials = [m for m in materials if m not in existing_materials_in_df]
+        if missing_materials:
+            add_rows = pd.DataFrame(
+                [{"Material": m, "Group": existing_assignments.get(m, "")} for m in missing_materials]
+            )
+            group_assign_df = pd.concat([group_assign_df, add_rows], ignore_index=True)
+
+    st.session_state["group_assign_df"] = group_assign_df
 
     st.markdown("**Step 1 – Assign materials to groups**")
     edited_group_assign_df = st.data_editor(
-        group_assign_df,
+        st.session_state["group_assign_df"],
         num_rows="fixed",
         use_container_width=True,
         key="group_assign_editor",
@@ -799,7 +816,16 @@ if calc_df is not None:
         },
     )
 
-    # Derive list of groups (from edited assignments + existing groups)
+    # Save edited assignments df and dict
+    st.session_state["group_assign_df"] = edited_group_assign_df
+    new_group_assignments = {}
+    for _, row in edited_group_assign_df.iterrows():
+        mat = row.get("Material")
+        grp = row.get("Group")
+        new_group_assignments[mat] = grp
+    st.session_state["group_assignments"] = new_group_assignments
+
+    # Derive list of groups (from edited assignments + group_options)
     groups_from_assignments = set(
         str(g).strip()
         for g in edited_group_assign_df["Group"].dropna().unique()
@@ -810,7 +836,6 @@ if calc_df is not None:
     # ---------- Group price table (PERSISTENT) ----------
     group_price_df = st.session_state.get("group_price_df")
     if group_price_df is None:
-        # First time: create from all_groups + existing_group_prices
         rows = []
         for g in all_groups:
             rows.append(
@@ -856,7 +881,7 @@ if calc_df is not None:
             new_group_prices[g] = row.get("Group Price per SQM (AUD)", np.nan)
     st.session_state["group_prices"] = new_group_prices
 
-    # Individual material override prices
+    # ---------- Material overrides ----------
     st.markdown("**Step 3 – Optional material overrides (per SQM, AUD)**")
     override_rows = []
     for m in materials:
@@ -874,10 +899,6 @@ if calc_df is not None:
         key="material_override_editor",
     )
 
-    # Save latest presets into session_state (based on what you picked/typed)
-    st.session_state["group_assignments"] = dict(
-        zip(edited_group_assign_df["Material"], edited_group_assign_df["Group"])
-    )
     st.session_state["material_overrides"] = dict(
         zip(edited_override_df["Material"], edited_override_df["Override Price per SQM (AUD)"])
     )
