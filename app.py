@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import re
 import json
+import math
 from io import BytesIO
 from openpyxl import load_workbook
 
@@ -322,6 +323,8 @@ if "calc_df" not in st.session_state:
     st.session_state["calc_df"] = None
 if "preset_file_loaded_once" not in st.session_state:
     st.session_state["preset_file_loaded_once"] = False
+if "reset_existing_group_choice" not in st.session_state:
+    st.session_state["reset_existing_group_choice"] = False
 
 # Load default preset only once at very beginning (if nothing in state yet)
 if not st.session_state["group_assignments"] and not st.session_state["group_prices"]:
@@ -471,7 +474,7 @@ In this setup, **Qty per run** can either come from:
 
 In the **Material Pricing** area you can:
 - Assign each material to a **Group name** (e.g. "3mm ACM", "Posters", "Window Vinyl").  
-- Either **type a new group name** or **select an existing group** from a dropdown.  
+- Either **type a new group name** or **select an existing group** from a dropdown (which always starts at "SelectExisting/None").  
 - Enter one **Group Price per SQM** per group using stable number inputs (no table refresh issues).  
 - Optionally override a single material with its own price.  
 - Save/Load **group presets** so you can reuse them next campaign/tender.
@@ -758,12 +761,18 @@ if st.session_state["calc_df"] is not None:
         key="assign_materials",
     )
 
+    # Reset existing group choice after a successful apply (so dropdown shows "SelectExisting/None")
+    if st.session_state.get("reset_existing_group_choice", False):
+        if "existing_group_choice" in st.session_state:
+            del st.session_state["existing_group_choice"]
+        st.session_state["reset_existing_group_choice"] = False
+
     col_g1, col_g2 = st.columns(2)
 
     with col_g1:
         existing_group_choice = st.selectbox(
             "Pick existing group (optional)",
-            options=["(none)"] + existing_groups,
+            options=["SelectExisting/None"] + existing_groups,
             index=0,
             key="existing_group_choice",
         )
@@ -777,7 +786,7 @@ if st.session_state["calc_df"] is not None:
         manual = group_name_input.strip()
         if manual:
             group_name = manual
-        elif existing_group_choice != "(none)":
+        elif existing_group_choice != "SelectExisting/None":
             group_name = existing_group_choice
         else:
             group_name = ""
@@ -790,6 +799,7 @@ if st.session_state["calc_df"] is not None:
             for m in selected_materials:
                 group_assignments[m] = group_name
             st.session_state["group_assignments"] = group_assignments
+            st.session_state["reset_existing_group_choice"] = True
             st.success(f"Assigned group '{group_name}' to {len(selected_materials)} material(s).")
 
     # Show current mapping (read-only table)
@@ -814,7 +824,13 @@ if st.session_state["calc_df"] is not None:
         for g in all_groups:
             existing_price = group_prices.get(g)
             # Let Streamlit manage the state: value is only used the first time
-            initial_value = 0.0 if existing_price is None or (isinstance(existing_price, float) and math.isnan(existing_price)) else float(existing_price)
+            if existing_price is None or (isinstance(existing_price, float) and math.isnan(existing_price)):
+                initial_value = 0.0
+            else:
+                try:
+                    initial_value = float(existing_price)
+                except Exception:
+                    initial_value = 0.0
             price = st.number_input(
                 f"Price per SQM (AUD) for group '{g}'",
                 min_value=0.0,
