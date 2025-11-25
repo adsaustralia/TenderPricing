@@ -322,6 +322,8 @@ if "calc_df" not in st.session_state:
     st.session_state["calc_df"] = None
 if "preset_file_loaded_once" not in st.session_state:
     st.session_state["preset_file_loaded_once"] = False
+if "manual_groups" not in st.session_state:
+    st.session_state["manual_groups"] = []
 
 # Load default preset only once at very beginning (if nothing in state yet)
 if not st.session_state["group_assignments"] and not st.session_state["group_prices"]:
@@ -471,6 +473,7 @@ In this setup, **Qty per run** can either come from:
 
 In the **Material Pricing** area you can:
 - Assign each material to a **Group name** (e.g. "3mm ACM", "Posters", "Window Vinyl").  
+- Either **type a new group name** OR **pick an existing group from a dropdown**.  
 - Enter one **Group Price per SQM** to apply to all materials in that group.  
 - Optionally override a single material with its own price.  
 - Save/Load **group presets** so you can reuse them next campaign/tender.
@@ -740,6 +743,24 @@ if calc_df is not None:
     existing_assignments = st.session_state.get("group_assignments", {})
     existing_group_prices = st.session_state.get("group_prices", {})
     existing_overrides = st.session_state.get("material_overrides", {})
+    manual_groups = st.session_state.get("manual_groups", [])
+
+    # ---------- GROUP NAME OPTIONS (for dropdown) ----------
+    # Anything that has ever been used as a group name:
+    group_options = set(manual_groups)
+    group_options.update(g for g in existing_group_prices.keys() if g)
+    group_options.update(g for g in existing_assignments.values() if g)
+    group_options = sorted({str(g).strip() for g in group_options if str(g).strip() != ""})
+
+    st.markdown("**Add a new group name (optional)**")
+    new_group = st.text_input("Type a new group name and press Enter to add to the dropdown", value="")
+    if new_group:
+        new_group_clean = new_group.strip()
+        if new_group_clean and new_group_clean not in group_options:
+            manual_groups.append(new_group_clean)
+            st.session_state["manual_groups"] = manual_groups
+            st.success(f"Added '{new_group_clean}' to available group names. You can now pick it from dropdown.")
+        # clear input by rerun; no need to keep text
 
     # Build group assignment table
     group_assign_rows = []
@@ -753,21 +774,31 @@ if calc_df is not None:
     group_assign_df = pd.DataFrame(group_assign_rows)
 
     st.markdown("**Step 1 – Assign materials to groups**")
+    # Use a SelectboxColumn so you can PICK existing group names,
+    # but also allow blank (then the user can type a new group name above and use the dropdown).
     edited_group_assign_df = st.data_editor(
         group_assign_df,
         num_rows="fixed",
         use_container_width=True,
         key="group_assign_editor",
+        column_config={
+            "Group": st.column_config.SelectboxColumn(
+                "Group",
+                options=group_options,
+                required=False,
+                help="Pick an existing group name from dropdown. To create a new group name, use the text box above first."
+            )
+        },
     )
 
-    # Derive list of groups
-    groups = sorted(
-        {
-            str(g).strip()
-            for g in edited_group_assign_df["Group"].dropna().unique()
-            if str(g).strip() != ""
-        }
+    # Derive list of groups (from edited assignments + existing prices + manual groups)
+    groups = set(
+        str(g).strip()
+        for g in edited_group_assign_df["Group"].dropna().unique()
+        if str(g).strip() != ""
     )
+    groups.update(group_options)
+    groups = sorted(groups)
 
     # Build group price table
     group_price_rows = []
@@ -806,7 +837,7 @@ if calc_df is not None:
         key="material_override_editor",
     )
 
-    # Save latest presets into session_state (based on what you typed)
+    # Save latest presets into session_state (based on what you picked/typed)
     st.session_state["group_assignments"] = dict(
         zip(edited_group_assign_df["Material"], edited_group_assign_df["Group"])
     )
