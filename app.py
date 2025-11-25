@@ -318,6 +318,8 @@ if "group_prices" not in st.session_state:
     st.session_state["group_prices"] = {}
 if "material_overrides" not in st.session_state:
     st.session_state["material_overrides"] = {}
+if "group_price_df" not in st.session_state:
+    st.session_state["group_price_df"] = None
 if "calc_df" not in st.session_state:
     st.session_state["calc_df"] = None
 if "preset_file_loaded_once" not in st.session_state:
@@ -472,6 +474,7 @@ In this setup, **Qty per run** can either come from:
 In the **Material Pricing** area you can:
 - Assign each material to a **Group name** (e.g. "3mm ACM", "Posters", "Window Vinyl").  
 - Type any group name directly in a text field and apply it to selected materials.  
+- Quickly reuse existing group names from a dropdown.  
 - Enter one **Group Price per SQM** to apply to all materials in that group.  
 - Optionally override a single material with its own price.  
 - Save/Load **group presets** so you can reuse them next campaign/tender.
@@ -743,6 +746,12 @@ if st.session_state["calc_df"] is not None:
     group_prices = st.session_state["group_prices"]
     material_overrides = st.session_state["material_overrides"]
 
+    # All known groups (from assignments + prices)
+    existing_groups = sorted(
+        {g for g in group_assignments.values() if g} |
+        {g for g in group_prices.keys() if g}
+    )
+
     # ---------- STEP 1: Assign materials to groups (NO TABLE EDITING) ----------
     st.markdown("**Step 1 – Assign materials to groups**")
 
@@ -752,15 +761,31 @@ if st.session_state["calc_df"] is not None:
         key="assign_materials",
     )
 
-    group_name_input = st.text_input(
-        "Group name (new or existing – same text = same group)",
-        key="group_name_input",
-    )
+    col_g1, col_g2 = st.columns([2, 1])
+
+    with col_g1:
+        group_name_input = st.text_input(
+            "Group name (new or existing – same text = same group)",
+            key="group_name_input",
+        )
+
+    with col_g2:
+        # Optional helper: pick an existing group and copy into the text input
+        existing_group_choice = st.selectbox(
+            "Existing groups (optional)",
+            options=["(none)"] + existing_groups,
+            index=0,
+            key="existing_group_choice",
+        )
+        if st.button("Use selected group name"):
+            if existing_group_choice != "(none)":
+                # Set the text input's value for the next run
+                st.session_state["group_name_input"] = existing_group_choice
 
     if st.button("Apply group to selected materials"):
-        g = group_name_input.strip()
+        g = st.session_state.get("group_name_input", "").strip()
         if not g:
-            st.warning("Please type a group name before applying.")
+            st.warning("Please type a group name (or select one, then click 'Use selected group name').")
         elif not selected_materials:
             st.warning("Please select at least one material.")
         else:
@@ -784,13 +809,26 @@ if st.session_state["calc_df"] is not None:
         {g for g in group_prices.keys() if g}
     )
 
-    group_price_rows = []
-    for g in all_groups:
-        group_price_rows.append({
-            "Group": g,
-            "Group Price per SQM (AUD)": group_prices.get(g, np.nan),
-        })
-    group_price_df = pd.DataFrame(group_price_rows)
+    group_price_df = st.session_state.get("group_price_df")
+
+    if group_price_df is None:
+        # First time: build from all_groups + any existing prices
+        rows = []
+        for g in all_groups:
+            rows.append({
+                "Group": g,
+                "Group Price per SQM (AUD)": group_prices.get(g, np.nan),
+            })
+        group_price_df = pd.DataFrame(rows)
+    else:
+        # Ensure any new groups get added as new rows
+        existing_in_df = set(str(x).strip() for x in group_price_df["Group"].dropna())
+        missing_groups = [g for g in all_groups if g not in existing_in_df]
+        if missing_groups:
+            add_rows = pd.DataFrame(
+                [{"Group": g, "Group Price per SQM (AUD)": group_prices.get(g, np.nan)} for g in missing_groups]
+            )
+            group_price_df = pd.concat([group_price_df, add_rows], ignore_index=True)
 
     edited_group_price_df = st.data_editor(
         group_price_df,
@@ -799,7 +837,9 @@ if st.session_state["calc_df"] is not None:
         key="group_price_editor",
     )
 
-    # Save back price dict from edited table
+    # Persist df and rebuild dict
+    st.session_state["group_price_df"] = edited_group_price_df
+
     new_group_prices = {}
     for _, row in edited_group_price_df.iterrows():
         g = str(row.get("Group", "")).strip()
